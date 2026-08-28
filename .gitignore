@@ -1,0 +1,25 @@
+# Perfis e sessões do navegador
+perfil_robo_chrome/
+perfil_robo_*/
+*.log
+
+# Pastas de dados de teste/saída locais
+output/
+downloads/
+
+# Ambientes Virtuais
+venv/
+env/
+.env
+upgaming_bot/
+__pycache__/
+
+# Arquivos de Dados e Logs
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.json
+*.log
+Backups/
+desktop.ini
