@@ -7,30 +7,10 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from config.settings import (
-    DIVISOR_LOG,
     MARCAS_CONFIG,
-    SEL_BRAND_DROPDOWN,
-    SEL_BRAND_OK_BTN,
-    SEL_CONFIRM_EXPORT,
-    SEL_CREATE_DATE_FROM,
-    SEL_CREATE_DATE_TO,
-    SEL_EXPORT_BTN,
-    SEL_FROM_DATE,
-    SEL_GAME_TYPE_DROPDOWN,
-    SEL_MENU_FTD,
-    SEL_MENU_GEN_STATS,
-    SEL_MENU_REPORT,
-    SEL_MENU_TRANSACTIONS,
-    SEL_MENU_UGS,
-    SEL_MENU_USERS,
-    SEL_MORE_FILTER_BTN,
-    SEL_OK_BTN,
-    SEL_SEARCH_ADD_BTN,
-    SEL_SEARCH_BRAND_INPUT,
-    SEL_SEARCH_BTN_ALT,
-    SEL_SEARCH_FTD_BTN,
-    SEL_TO_DATE,
     URL_SISTEMA,
+    LogDivisors,
+    Seletores,
 )
 from utils.date_utils import obter_data_alvo, obter_periodo_extracao
 from utils.file_utils import obter_pasta_download_diario, obter_pasta_ugs_diario
@@ -39,9 +19,6 @@ logger = logging.getLogger(__name__)
 
 def extrair_dados_upgaming():
     logger.info("Iniciando módulo de Extração Web...")
-    
-    # 1. PEGA AS DATAS INTELIGENTES DO NOSSO MÓDULO (Sem variáveis ociosas)
-    data_inicio, data_fim, data_fim_nc = obter_periodo_extracao()
     arquivos_baixados = [] 
 
     try:
@@ -83,7 +60,7 @@ def extrair_dados_upgaming():
                 
                 # 2. VALIDAÇÃO PÓS-LOGIN (Garante que a barra lateral apareceu)
                 try:
-                    page.wait_for_selector(SEL_MENU_REPORT, timeout=15000)
+                    page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
                     logger.info("Login confirmado com sucesso!")
                 except PlaywrightTimeoutError:
                     logger.error("Falha ao confirmar o login: Menu lateral não encontrado, abortando por segurança.")
@@ -92,11 +69,14 @@ def extrair_dados_upgaming():
                 # 3. PROVA REAL DO COOKIE (Garante que não é uma tela de erro 502/Cloudflare)
                 logger.info("Avaliando sessão salva no cookie...")
                 try:
-                    page.wait_for_selector(SEL_MENU_REPORT, timeout=15000)
+                    page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
                     logger.info("Sessão ativa confirmada! Menu carregado, pulando login manual...")
                 except PlaywrightTimeoutError:
                     logger.error("Estado desconhecido! Não é a tela de login, mas o menu não carregou. Possível erro de rede ou bloqueio.")
                     return arquivos_baixados
+
+            logger.info("Avaliando o período de extração...")
+            data_inicio, data_fim, data_fim_nc = obter_periodo_extracao()
             
             # --- LOOP DE MARCAS ---
             for marca_arquivo, marca_bo in MARCAS_CONFIG.items():
@@ -116,34 +96,35 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     Função auxiliar criada para reduzir a 'Complexidade Cognitiva' do código.
     Ela processa os relatórios individualmente para a marca passada.
     """
-    logger.info(DIVISOR_LOG)
+    logger.info(LogDivisors.MAIN)
     logger.info(f" EXTRAINDO MARCA: {marca_arquivo}")
+    logger.info(LogDivisors.MAIN)
     
     # 2. PEGA A PASTA DE DOWNLOAD CORRETA LÁ NO DRIVE G:
     pasta_destino = obter_pasta_download_diario(marca_arquivo)
     
     # [1/6] NOVAS CONTAS
-    page.click(SEL_MENU_USERS)
+    page.click(Seletores.Menu.USERS)
     page.wait_for_timeout(2000)
     try:
-        page.wait_for_selector(SEL_BRAND_DROPDOWN, timeout=4000)
-        page.select_option(SEL_BRAND_DROPDOWN, label=marca_bo)
-        page.click(SEL_BRAND_OK_BTN)
+        page.wait_for_selector(Seletores.Filtros.BRAND_DROPDOWN, timeout=4000)
+        page.select_option(Seletores.Filtros.BRAND_DROPDOWN, label=marca_bo)
+        page.click(Seletores.Botoes.BRAND_OK)
     except PlaywrightTimeoutError:
-        page.click(SEL_SEARCH_BRAND_INPUT)
-        page.fill(SEL_SEARCH_BRAND_INPUT, marca_bo)
+        page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
+        page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
         page.wait_for_timeout(1000)
         page.click(f'text="{marca_bo}" >> visible=true')
         page.wait_for_timeout(500)
     
-    page.click(SEL_MORE_FILTER_BTN)
-    page.fill(SEL_CREATE_DATE_FROM, data_inicio)
-    page.fill(SEL_CREATE_DATE_TO, data_fim_nc)
-    page.click(SEL_SEARCH_BTN_ALT)
+    page.click(Seletores.Botoes.MORE_FILTER)
+    page.fill(Seletores.Filtros.CREATE_DATE_FROM, data_inicio)
+    page.fill(Seletores.Filtros.CREATE_DATE_TO, data_fim_nc)
+    page.click(Seletores.Botoes.SEARCH_ALT)
     page.wait_for_timeout(6000) 
     
     with page.expect_download(timeout=120000) as download_info:
-        page.click(SEL_EXPORT_BTN)
+        page.click(Seletores.Botoes.EXPORT)
     
     arq_nc = str(pasta_destino / f"NC - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_nc)
@@ -151,7 +132,7 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     logger.info(f"Salvo: {arq_nc}")
 
     # [2/6] SYSTEM TRANSACTIONS
-    page.click(SEL_MENU_TRANSACTIONS)
+    page.click(Seletores.Menu.TRANSACTIONS)
     page.wait_for_timeout(3000)
     page.click('div.choosen:visible')
     page.wait_for_timeout(1000)
@@ -165,22 +146,22 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     page.click('div.choosen:visible')
     page.wait_for_timeout(500)
     
-    page.fill(SEL_FROM_DATE, data_inicio)
-    page.fill(SEL_TO_DATE, data_fim)
-    page.click(SEL_OK_BTN)
+    page.fill(Seletores.Filtros.DATE_FROM, data_inicio)
+    page.fill(Seletores.Filtros.DATE_TO, data_fim)
+    page.click(Seletores.Botoes.OK)
     
     try:
-        page.click(SEL_SEARCH_ADD_BTN, timeout=3000)
+        page.click(Seletores.Botoes.SEARCH_ADD, timeout=3000)
         logger.debug("Botão SEARCH clicado manualmente.")
     except PlaywrightTimeoutError:
         logger.debug("Botão SEARCH ignorado (busca automática acionada ou botão ausente).")
     page.wait_for_timeout(6000) 
     
-    page.click(SEL_EXPORT_BTN)
-    page.wait_for_selector(SEL_CONFIRM_EXPORT, timeout=10000)
+    page.click(Seletores.Botoes.EXPORT)
+    page.wait_for_selector(Seletores.Botoes.CONFIRM_EXPORT, timeout=10000)
     
     with page.expect_download(timeout=120000) as download_info:
-        page.click(SEL_CONFIRM_EXPORT)
+        page.click(Seletores.Botoes.CONFIRM_EXPORT)
     
     arq_trans = str(pasta_destino / f"Transações - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_trans)
@@ -188,32 +169,32 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     logger.info(f"Salvo: {arq_trans}")
 
     # [3/6] UGS ACUMULADO
-    page.click(SEL_MENU_UGS)
+    page.click(Seletores.Menu.UGS)
     page.wait_for_timeout(3000)
-    page.click(SEL_SEARCH_BRAND_INPUT)
-    page.fill(SEL_SEARCH_BRAND_INPUT, marca_bo)
+    page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
+    page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
     page.wait_for_timeout(1000)
     page.click(f'text="{marca_bo}" >> visible=true')
     page.wait_for_timeout(500)
     
-    page.fill(SEL_FROM_DATE, data_inicio)
-    page.fill(SEL_TO_DATE, data_fim)
-    page.click(SEL_OK_BTN)
+    page.fill(Seletores.Filtros.DATE_FROM, data_inicio)
+    page.fill(Seletores.Filtros.DATE_TO, data_fim)
+    page.click(Seletores.Botoes.OK)
     
     tipos_ugs = {"": "Completo", "1": "ST", "2": "LC", "7": "SB", "8": "MG"}
     for valor, sigla in tipos_ugs.items():
-        page.select_option(SEL_GAME_TYPE_DROPDOWN, value=valor)
-        page.click(SEL_SEARCH_ADD_BTN)
+        page.select_option(Seletores.Filtros.GAME_TYPE, value=valor)
+        page.click(Seletores.Botoes.SEARCH_ADD)
         page.wait_for_timeout(6000) 
         with page.expect_download(timeout=120000) as download_info:
-            page.click(SEL_EXPORT_BTN)
+            page.click(Seletores.Botoes.EXPORT)
         arq_ugs = str(pasta_destino / f"{marca_arquivo} - UGS {sigla}.xlsx")
         download_info.value.save_as(arq_ugs)
         arquivos_baixados.append(arq_ugs)
         logger.info(f"Salvo: {arq_ugs}")
 
     # [4/6] UGS DIÁRIO (Buscador Dinâmico de Lacunas)
-    page.select_option(SEL_GAME_TYPE_DROPDOWN, value="")
+    page.select_option(Seletores.Filtros.GAME_TYPE, value="")
     
     # Variável ajustável: Quantos dias no passado o robô deve checar?
     JANELA_DIAS = 7
@@ -246,14 +227,14 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         d_fim = dia_alvo.strftime("%d-%m-%Y 23:59")
         nome_dia = dia_alvo.strftime("%d-%m")
         
-        page.fill(SEL_FROM_DATE, d_inicio)
-        page.fill(SEL_TO_DATE, d_fim)
-        page.click(SEL_OK_BTN)
-        page.click(SEL_SEARCH_ADD_BTN)
+        page.fill(Seletores.Filtros.DATE_FROM, d_inicio)
+        page.fill(Seletores.Filtros.DATE_TO, d_fim)
+        page.click(Seletores.Botoes.OK)
+        page.click(Seletores.Botoes.SEARCH_ADD)
         page.wait_for_timeout(6000)
         
         with page.expect_download(timeout=120000) as download_info:
-            page.click(SEL_EXPORT_BTN)
+            page.click(Seletores.Botoes.EXPORT)
         
         pasta_ugs_alvo = obter_pasta_ugs_diario(marca_arquivo, dia_alvo.year, dia_alvo.month)
         arq_ugs_diario = str(pasta_ugs_alvo / f"{nome_dia}.xlsx")
@@ -263,20 +244,20 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         logger.info(f"Salvo UGS Diário: {arq_ugs_diario}")
 
     # [5/6] FTD
-    page.click(SEL_MENU_FTD)
+    page.click(Seletores.Menu.FTD)
     page.wait_for_timeout(3000)
-    page.click(SEL_SEARCH_BRAND_INPUT)
-    page.fill(SEL_SEARCH_BRAND_INPUT, marca_bo)
+    page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
+    page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
     page.wait_for_timeout(1000)
     page.click(f'text="{marca_bo}" >> visible=true')
     page.wait_for_timeout(500)
-    page.fill(SEL_FROM_DATE, data_inicio)
-    page.fill(SEL_TO_DATE, data_fim)
-    page.click(SEL_OK_BTN)
-    page.click(SEL_SEARCH_FTD_BTN)
+    page.fill(Seletores.Filtros.DATE_FROM, data_inicio)
+    page.fill(Seletores.Filtros.DATE_TO, data_fim)
+    page.click(Seletores.Botoes.OK)
+    page.click(Seletores.Botoes.SEARCH_FTD)
     page.wait_for_timeout(6000) 
     with page.expect_download(timeout=120000) as download_info:
-        page.click(SEL_EXPORT_BTN)
+        page.click(Seletores.Botoes.EXPORT)
     
     arq_ftd = str(pasta_destino / f"FTD - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_ftd)
@@ -288,17 +269,24 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     # =====================================================================
     logger.info("Extraindo General Statistics via API (JSON)...")
     
-    page.click(SEL_MENU_REPORT)
+    page.click(Seletores.Menu.REPORT)
     page.wait_for_timeout(500)
-    page.click(SEL_MENU_GEN_STATS)
+    page.click(Seletores.Menu.GEN_STATS)
     page.wait_for_timeout(3000)
     
     # Seleciona a marca
-    page.click(SEL_SEARCH_BRAND_INPUT)
-    page.fill(SEL_SEARCH_BRAND_INPUT, marca_bo)
+    page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
+    page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
     page.wait_for_timeout(1000)
     page.click(f'text="{marca_bo}" >> visible=true')
     page.wait_for_timeout(500)
+
+    try:
+        page.wait_for_load_state("networkidle", timeout=5000)
+    except PlaywrightTimeoutError:
+        pass
+
+    page.wait_for_timeout(2000)
 
     # Define a data_alvo buscando a inteligência do date_utils
     data_alvo = obter_data_alvo()
@@ -321,17 +309,17 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
             # =========================================================
             try:
                 # TRUQUE ANTI-JS: Clicar, limpar e digitar pausadamente (SEU CÓDIGO ORIGINAL)
-                loc_from = page.locator(SEL_FROM_DATE)
+                loc_from = page.locator(Seletores.Filtros.DATE_FROM)
                 loc_from.click()
                 loc_from.clear()
                 loc_from.press_sequentially(f"{data_loop} 00:00", delay=50)
                 
-                loc_to = page.locator(SEL_TO_DATE)
+                loc_to = page.locator(Seletores.Filtros.DATE_TO)
                 loc_to.click()
                 loc_to.clear()
                 loc_to.press_sequentially(f"{data_loop} 23:59", delay=50)
                 
-                page.click(SEL_OK_BTN)
+                page.click(Seletores.Botoes.OK)
                 
                 # OBRIGATÓRIO: Dar 1 segundo para o site "entender" a data antes do Search
                 page.wait_for_timeout(1000)
@@ -339,7 +327,7 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
                 # Escuta a aba "Network" e intercepta a requisição assim que clicar em Search
                 # (EXATAMENTE COMO VOCÊ ESCREVEU)
                 with page.expect_response(lambda response: response.url and "api/Reporting/Get" in response.url and "GameType" in response.url, timeout=30000) as response_info:
-                    page.click(SEL_SEARCH_ADD_BTN)
+                    page.click(Seletores.Botoes.SEARCH_ADD)
                     
                 # Extrai o JSON direto da resposta e salva no array
                 json_do_dia = response_info.value.json()

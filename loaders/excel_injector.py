@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pywintypes
 import win32com.client as win32
 
 # Importações da nossa arquitetura
@@ -17,6 +18,7 @@ from transformers.data_cleaner import (
 )
 from utils.date_utils import obter_data_alvo
 from utils.file_utils import (
+    MESES_PT,
     obter_caminho_base,
     obter_caminho_base_completa,
     obter_pasta_download_diario,
@@ -47,25 +49,37 @@ def atualizar_dinamicas(wb):
     for cache in wb.PivotCaches():
         try: 
             cache.BackgroundQuery = False
-        except Exception as e_cache: 
-            logger.debug(f"Ignorando propriedade no cache local: {e_cache!s}")
+        except pywintypes.com_error as e_cache: 
+            logger.debug(f"Propriedade BackgroundQuery ignorada neste cache: {e_cache}")
     wb.RefreshAll()
 
 def _fechar_excel_seguro(wb, excel):
     try:
         if wb: wb.Close(SaveChanges=False)
         if excel: excel.Quit()
-    except Exception as e_quit:
-        logger.debug(f"Fechamento seguro: {e_quit!s}")
+    except pywintypes.com_error as e_quit:
+        logger.debug(f"Erro na interface COM ao forçar fechamento seguro: {e_quit}")
+    except AttributeError as e_attr:
+        logger.debug(f"Objeto inexistente durante o fechamento seguro: {e_attr}")
 
 def _fazer_backup(caminho_arquivo: Path):
     if not caminho_arquivo.exists(): return
-    pasta_bkp = caminho_arquivo.parent / "Backups"
-    pasta_bkp.mkdir(exist_ok=True)
+    
+    data_referencia = obter_data_alvo()
+    ano = data_referencia.strftime("%Y")
+    mes_numero = data_referencia.strftime("%m")
+
+    mes_nome = MESES_PT[data_referencia.month][0]
+    pasta_mes = f"{mes_numero} - {mes_nome}"
+
+    pasta_bkp = caminho_arquivo.parent / "Backups" / ano / pasta_mes
+    pasta_bkp.mkdir(parents=True, exist_ok=True)
+
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
     nome_bkp = f"{caminho_arquivo.stem}_BKP_{timestamp}{caminho_arquivo.suffix}"
+
     shutil.copy2(caminho_arquivo, pasta_bkp / nome_bkp)
-    logger.info(f"🛡️ Backup criado: {nome_bkp}")
+    logger.info(f" § Backup salvo em [{ano}/{pasta_mes}]: {nome_bkp}")
 
 def _obter_caminho_download(marca: str, nome_arquivo: str) -> Path:
     pasta = obter_pasta_download_diario(marca)
@@ -112,9 +126,15 @@ def atualizar_base_completa_historica(marca, *args, **kwargs):
         df_novos = df_nc.iloc[idx_corte:]
         achou_ancora = True
     else:
-        logger.warning("O último ID não foi encontrado no arquivo novo de NC! Adicionando base inteira por segurança.")
-        df_novos = df_nc
-        achou_ancora = False
+        marcas_arquivo_novo = df_nc['BrandName'].dropna().unique()
+
+        if len(marcas_arquivo_novo) == 1 and marcas_arquivo_novo[0].strip().upper() == marca.strip().upper():
+            logger.warning(f"Âncora não encontrada, mas o arquivo pertence exclusivamente à marca {marca}. Injetando carga total por segurança.")
+            df_novos = df_nc
+            achou_ancora = False
+        else:
+            logger.error(f"FALHA CRÍTICA: Arquivo NC da marca {marca} contém dados inválidos ou misturados: {marcas_arquivo_novo}. Abortando a injeção de novos dados!")
+            return
         
     dados_a_inserir = df_novos.values.tolist()
     total_linhas_novas = len(dados_a_inserir)
@@ -155,7 +175,9 @@ def atualizar_base_completa_historica(marca, *args, **kwargs):
 def carregar_base_nc(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO CARREGAMENTO: NOVAS CONTAS (NC) ({marca}) ===")
     arquivo_origem = _obter_caminho_download(marca, f"NC - {marca}.xlsx")
-    arquivo_base_oficial = obter_caminho_base(marca, "NC", obter_data_alvo())
+
+    data_alvo = obter_data_alvo()
+    arquivo_base_oficial = obter_caminho_base(marca, "NC", data_alvo)
     
     if not arquivo_origem.exists() or not arquivo_base_oficial.exists():
         logger.warning("Arquivos de NC não encontrados. Pulando etapa.")
@@ -165,8 +187,8 @@ def carregar_base_nc(marca, *args, **kwargs):
     df_final = pd.read_excel(arquivo_origem)
     
     if 'RegistrationDate' in df_final.columns:
-        logger.info("Aplicando corte rigoroso (NC): Mantendo registros até Hoje às 00:00...")
-        df_final = aplicar_corte_datas_futuras(df_final, 'RegistrationDate')
+        logger.info("Aplicando corte dinâmico (NC)")
+        df_final = aplicar_corte_datas_futuras(df_final, 'RegistrationDate', data_alvo)
         logger.info(f"Restaram {len(df_final)} registros após o corte.")
     
     df_final = blindar_dados(df_final)
@@ -422,7 +444,8 @@ def carregar_base_kyc(marca, *args, **kwargs):
         
         if 'RegistrationDate' in df_nc.columns:
             logger.info("Aplicando corte rigoroso (NC): Mantendo registros até Hoje às 00:00...")
-            df_nc = aplicar_corte_datas_futuras(df_nc, 'RegistrationDate')
+            data_alvo = obter_data_alvo()
+            df_nc = aplicar_corte_datas_futuras(df_nc, 'RegistrationDate', data_alvo)
             logger.info(f"Restaram {len(df_nc)} registros após o corte.")
             
         df_nc = blindar_dados(df_nc)
@@ -658,8 +681,8 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     df_din[col_deposito] = pd.to_numeric(df_din[col_deposito], errors='coerce').fillna(0)
     df_din[col_saque] = pd.to_numeric(df_din[col_saque], errors='coerce').fillna(0)
     
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     df_din = df_din[(df_din['Dia'] > 0) & (df_din['Dia'] <= limite_dia)].copy()
     
@@ -805,8 +828,8 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
 
     df_mesclado = pd.merge(df_p1, df_p2, on='Dia', how='outer').fillna(0).sort_values('Dia').reset_index(drop=True)
     
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
     
@@ -929,8 +952,8 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
 
     df_mesclado = pd.merge(df_pu, df_x, on='Dia', how='outer').fillna(0).sort_values('Dia').reset_index(drop=True)
     
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
 
@@ -1038,8 +1061,8 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     df_mtd = df_mtd.dropna(subset=['Dia'])
     df_mtd['Dia'] = df_mtd['Dia'].astype(int)
     
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     logger.info(f"Aplicando filtro de data: Coletando dados até o dia de ontem ({limite_dia:02d})...")
     df_mtd = df_mtd[(df_mtd['Dia'] > 0) & (df_mtd['Dia'] <= limite_dia)].copy()
@@ -1166,8 +1189,8 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     df_mesclado = pd.merge(df_p1, df_p2, on='Dia', how='outer')
     df_mesclado = pd.merge(df_mesclado, df_p3, on='Dia', how='outer').fillna(0).sort_values('Dia').reset_index(drop=True)
     
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     logger.info(f"Aplicando filtro de data: Coletando dados até o dia de ontem ({limite_dia:02d})...")
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
@@ -1284,8 +1307,8 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
         "MiniGames":  {"bet": 9, "win": 10, "users": 15}  
     }
 
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
+    data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
     
     logger.info("Lendo dados extraídos do arquivo JSON local...")
     with open(arquivo_json, 'r', encoding='utf-8') as f:
@@ -1383,10 +1406,9 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
         logger.error("Base Performance não encontrada para o Step 7.")
         return
 
-    ontem = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
-    limite_dia = ontem.day
-    mes_atual = ontem.month
     data_alvo = obter_data_alvo()
+    limite_dia = data_alvo.day
+    mes_atual = data_alvo.month
     
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,AS", header=0)
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)

@@ -4,6 +4,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config.settings import BASE_PATH
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -15,12 +17,6 @@ MESES_PT = {
     7: ('Julho', 'Jul'), 8: ('Agosto', 'Ago'), 9: ('Setembro', 'Set'),
     10: ('Outubro', 'Out'), 11: ('Novembro', 'Nov'), 12: ('Dezembro', 'Dez')
 }
-
-BASE_DRIVE = os.getenv("DRIVE_ROOT_PATH")
-if not BASE_DRIVE:
-    raise ValueError("ALERTA: A variável DRIVE_ROOT_PATH não foi encontrada no .env!")
-
-BASE_PATH = Path(BASE_DRIVE)
 
 MARCAS_PATHS = {
     "Betfast": {
@@ -99,7 +95,8 @@ def obter_pasta_ugs_diario(marca: str, ano: int, mes: int) -> Path:
 def obter_caminho_base_completa(marca: str) -> Path:
     marcas_corretas = {"BetFast": "Betfast", "Faz1Bet": "Faz1Bet", "TivoBet": "TivoBet"}
     nome_oficial = marcas_corretas.get(marca, marca)
-    pasta = Path(r"G:\.shortcut-targets-by-id\1dkIGJFLR2FwpbJd23795LkPtnLwJKHLJ\Fast Gaming\xFAST\Bases Completas")
+    pasta = BASE_PATH / "xFAST" / "Bases Completas"
+
     return pasta / f"{nome_oficial} - Base Completa.xlsx"
 
 # =============================================================================

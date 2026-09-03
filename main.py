@@ -1,12 +1,7 @@
 import logging
 import time
 
-from dotenv import load_dotenv
-
-# Carrega as senhas e variáveis ocultas
-load_dotenv()
-
-from config.settings import MARCAS_CONFIG
+from config.settings import MARCAS_CONFIG, LogDivisors
 from extractors.web_scraper import extrair_dados_upgaming
 
 # Importa todas as funções de injeção
@@ -51,7 +46,9 @@ def main():
         # =====================================================================
         # ETAPA 1: EXTRAÇÃO WEB (Playwright)
         # =====================================================================
-        logger.info("\n" + "="*70 + "\nETAPA 1: EXTRAÇÃO WEB (PLAYWRIGHT)\n" + "="*70)
+        logger.info(LogDivisors.MAIN)
+        logger.info(" ETAPA 1: EXTRAÇÃO WEB (PLAYWRIGHT) ")
+        logger.info(LogDivisors.MAIN)
         
         # O Web Scraper faz o loop nas 3 marcas, cria as pastas diárias e devolve a lista de arquivos
         arquivos_baixados = extrair_dados_upgaming()
@@ -63,7 +60,9 @@ def main():
         # =====================================================================
         # ETAPA 2: TRANSFORMAÇÃO (Limpeza de Dados Crus com Pandas)
         # =====================================================================
-        logger.info("\n" + "="*70 + "\nETAPA 2: TRANSFORMAÇÃO DOS ARQUIVOS(PANDAS/CALAMINE)\n" + "="*70)
+        logger.info(LogDivisors.MAIN)
+        logger.info(" ETAPA 2: TRANSFORMAÇÃO DOS ARQUIVOS(PANDAS/CALAMINE) ")
+        logger.info(LogDivisors.MAIN)
         
         # Aplica a máscara contábil, formata datas e converte textos para números
         arquivos_limpos = tratar_relatorios_crus(arquivos_baixados)
@@ -71,11 +70,15 @@ def main():
         # =====================================================================
         # ETAPA 3: CARREGAMENTO (Injeção no Servidor G: via Win32COM)
         # =====================================================================
-        logger.info("\n" + "="*70 + "\nETAPA 3: CARREGAMENTO NAS BASES OFICIAIS\n" + "="*70)
+        logger.info(LogDivisors.MAIN)
+        logger.info(" ETAPA 3: CARREGAMENTO NAS BASES OFICIAIS ")
+        logger.info(LogDivisors.MAIN)
         
         # Loop pythônico limpo (sem o .keys())
         for marca in MARCAS_CONFIG:
-            logger.info(f"\n>>> INICIANDO INJEÇÃO PARA A MARCA: {marca.upper()} <<<")
+            logger.info(LogDivisors.SUB)
+            logger.info(f" >>> INICIANDO INJEÇÃO PARA A MARCA: {marca.upper()} <<< ")
+            logger.info(LogDivisors.SUB)
             
             # 3.1 - Relatórios Históricos e Individuais
             atualizar_base_completa_historica(marca)
@@ -100,7 +103,9 @@ def main():
         logger.exception("ERRO FATAL NO PIPELINE:")
     finally:
         elapsed = (time.time() - start_time) / 60
-        logger.info(f"\nTEMPO TOTAL DE EXECUÇÃO: {elapsed:.2f} minutos.")
+        logger.info(LogDivisors.MAIN)
+        logger.info(f" TEMPO TOTAL DE EXECUÇÃO: {elapsed:.2f} minutos.")
+        logger.info(LogDivisors.MAIN)
 
 if __name__ == "__main__":
     main()

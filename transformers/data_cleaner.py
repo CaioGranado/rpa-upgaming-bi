@@ -192,13 +192,14 @@ def blindar_dados(df: pd.DataFrame) -> pd.DataFrame:
             
     return df.fillna("")
 
-def aplicar_corte_datas_futuras(df: pd.DataFrame, coluna_data: str = 'RegistrationDate') -> pd.DataFrame:
+def aplicar_corte_datas_futuras(df: pd.DataFrame, coluna_data: str, data_alvo) -> pd.DataFrame:
     if coluna_data in df.columns:
-        limite_data = pd.Timestamp.now().normalize()
-        # Adicionado o dayfirst=True para que o corte entenda a data perfeitamente
+        limite_corte = pd.Timestamp(data_alvo.date()) + pd.Timedelta(days=1)
+
         datas_temporarias = pd.to_datetime(df[coluna_data], dayfirst=True, errors='coerce')
         eh_vazio_real = df[coluna_data].astype(str).str.strip().isin(['', 'nan', 'NaT', 'None', '<NA>'])
-        df = df[(datas_temporarias < limite_data) | eh_vazio_real]
+
+        df = df[(datas_temporarias < limite_corte) | eh_vazio_real]
         df = df.reset_index(drop=True)
     return df
 

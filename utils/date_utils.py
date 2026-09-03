@@ -33,8 +33,9 @@ def obter_data_alvo():
 
 def obter_periodo_extracao():
     alvo = obter_data_alvo()
+    hoje_real = datetime.now(timezone.utc).astimezone()
     data_inicio = alvo.replace(day=1).strftime("%d-%m-%Y 00:00")
     data_fim = alvo.strftime("%d-%m-%Y 23:59")
-    data_fim_nc = (alvo + timedelta(days=1)).strftime("%d-%m-%Y 23:59")
+    data_fim_nc = hoje_real.strftime("%d-%m-%Y 23:59")
     
     return data_inicio, data_fim, data_fim_nc
