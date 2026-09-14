@@ -17,6 +17,7 @@ from transformers.data_cleaner import (
     garantir_continuidade_temporal,
 )
 from utils.date_utils import obter_data_alvo
+from utils.excel_utils import aplicar_filtro_dinamica
 from utils.file_utils import (
     MESES_PT,
     obter_caminho_base,
@@ -51,6 +52,11 @@ def atualizar_dinamicas(wb):
             cache.BackgroundQuery = False
         except pywintypes.com_error as e_cache: 
             logger.debug(f"Propriedade BackgroundQuery ignorada neste cache: {e_cache}")
+
+        try:
+            cache.MissingItemsLimit = 0
+        except pywintypes.com_error as e_limit:
+            logger.debug(f"Falha ao limpar cache fantasma: {e_limit}")
     wb.RefreshAll()
 
 def _fechar_excel_seguro(wb, excel):
@@ -213,7 +219,7 @@ def carregar_base_nc(marca, *args, **kwargs):
         
         ultima_linha_antiga = ws.Cells(ws.Rows.Count, 1).End(-4162).Row
         if ultima_linha_antiga >= 3:
-            ws.Range(f"A3:AR{ultima_linha_antiga}").ClearContents()
+            ws.Range(f"A3:AR{ultima_linha_antiga}").Delete(Shift=-4162)
             
         ws.Range("A2:AI2").ClearContents()
         if hasattr(ws, "Range"): ws.Range("AP2:AP2").ClearContents()
@@ -227,6 +233,21 @@ def carregar_base_nc(marca, *args, **kwargs):
         
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
+
+        ws_din = wb.Sheets("Din_Diario")
+        aplicar_filtro_dinamica(ws_din, "B1", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_din, "F1", valor_desejado="Orgânicos")
+
+        ws_din_regiao = wb.Sheets("Din_Regiao")
+        aplicar_filtro_dinamica(ws_din_regiao, "B2", valor_desejado="Orgânicos")
+        aplicar_filtro_dinamica(ws_din_regiao, "F2", valor_desejado="(Tudo)", exceto="Orgânicos")
+
+        ws_fortune = wb.Sheets("Fortune")
+        aplicar_filtro_dinamica(ws_fortune, "B2", valor_desejado="danielfortune")
+        aplicar_filtro_dinamica(ws_fortune, "F1", valor_desejado="danielfortune")
+        aplicar_filtro_dinamica(ws_fortune, "F2", valor_desejado="True")
+        aplicar_filtro_dinamica(ws_fortune, "A4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_fortune, "E4", valor_desejado="(Tudo)", exceto="(blank)")
         
         logger.info("Salvando arquivo de NC (Por favor, aguarde. Pode levar alguns segundos)...")
         wb.Save()
@@ -265,7 +286,7 @@ def carregar_base_ftd(marca, *args, **kwargs):
         
         ultima_linha_antiga = ws.Cells(ws.Rows.Count, 1).End(-4162).Row
         if ultima_linha_antiga >= 3:
-            ws.Range(f"A3:AD{ultima_linha_antiga}").ClearContents()
+            ws.Range(f"A3:AD{ultima_linha_antiga}").Delete(Shift=-4162)
         ws.Range("A2:U2").ClearContents()
 
         ws.Range(ws.Cells(2, 1), ws.Cells(ultima_linha_destino, 21)).Value = dados_a_inserir
@@ -275,7 +296,21 @@ def carregar_base_ftd(marca, *args, **kwargs):
         
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
-        
+
+        ws_din_afiliado = wb.Sheets("Din_Afiliados")
+        aplicar_filtro_dinamica(ws_din_afiliado, "B2", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_din_afiliado, "E2", valor_desejado="Orgânicos")
+
+        ws_fortune = wb.Sheets("Fortune")
+        aplicar_filtro_dinamica(ws_fortune, "B2", valor_desejado="danielfortune")
+
+        ws_din_diario = wb.Sheets("Din_Diario")
+        aplicar_filtro_dinamica(ws_din_diario, "A4", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_din_diario, "B3", valor_desejado=["De R$0 até R$10", "De R$10 até R$20", "De R$20 até R$30", "De R$30 até R$50", "Superior a R$50"])
+
+        ws_din_faixa = wb.Sheets("Din_FaixaPagamento")
+        aplicar_filtro_dinamica(ws_din_faixa, "A3", valor_desejado="(Tudo)")
+
         logger.info("Salvando arquivo de FTD (Por favor, aguarde)...")
         wb.Save()
         wb.Close()
@@ -290,7 +325,8 @@ def carregar_base_transacoes(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO CARREGAMENTO: TRANSAÇÕES E BASE COMPLETA ({marca}) ===")
     arquivo_origem_base = obter_caminho_base_completa(marca)
     arquivo_origem_transacoes = _obter_caminho_download(marca, f"Transações - {marca}.xlsx")
-    arquivo_base_oficial = obter_caminho_base(marca, "Transacoes", obter_data_alvo())
+    data_alvo = obter_data_alvo()
+    arquivo_base_oficial = obter_caminho_base(marca, "Transacoes", data_alvo)
     
     if not arquivo_base_oficial.exists():
         logger.warning("Arquivo oficial de Transações não encontrado.")
@@ -345,7 +381,60 @@ def carregar_base_transacoes(marca, *args, **kwargs):
         
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
+
+        mes_str = MESES_PT[data_alvo.month][0].lower()
+
+        for aba in ["Din_Type", "Din_Afiliados", "MTD_ID", "Din_Diario"]:
+            ws_aba = wb.Sheets(aba)
+            aplicar_filtro_dinamica(ws_aba, "B2", "Success")
+            aplicar_filtro_dinamica(ws_aba, "B3", mes_str)
+
+        for aba in ["Din_Afiliados", "MTD_ID", "Din_Diario"]:
+            ws_alvo = wb.Sheets(aba)
+            aplicar_filtro_dinamica(ws_alvo, "A7", valor_desejado="(Tudo)")
+            aplicar_filtro_dinamica(ws_alvo, "B5", valor_desejado=["Deposit", "Withdraw", "Bonus Activation"])
+
+
+        ws_cashback = wb.Sheets("Afiliados_Cashback")
+        # Tabela 1
+        aplicar_filtro_dinamica(ws_cashback, "A8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "B3", "Sim")
+        aplicar_filtro_dinamica(ws_cashback, "B4", mes_str)
+        aplicar_filtro_dinamica(ws_cashback, "B5", "Success")
+        aplicar_filtro_dinamica(ws_cashback, "B6", "Cash Bonus")
         
+        # Tabela 2
+        aplicar_filtro_dinamica(ws_cashback, "D8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "E3", "Sim")
+        aplicar_filtro_dinamica(ws_cashback, "E4", mes_str)
+        aplicar_filtro_dinamica(ws_cashback, "E5", "Success")
+        aplicar_filtro_dinamica(ws_cashback, "E6", "LeaderBoard Cash Deposit" )
+        
+        # Tabela 3
+        aplicar_filtro_dinamica(ws_cashback, "G8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "H3", "Sim")
+        aplicar_filtro_dinamica(ws_cashback, "H4", mes_str)
+        aplicar_filtro_dinamica(ws_cashback, "H5", "Success")
+        aplicar_filtro_dinamica(ws_cashback, "H6", "(blank)")
+        
+        # Tabela 4
+        aplicar_filtro_dinamica(ws_cashback, "K8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "L3", "Sim")
+        aplicar_filtro_dinamica(ws_cashback, "L4", mes_str)
+        aplicar_filtro_dinamica(ws_cashback, "L5", "Success")
+        aplicar_filtro_dinamica(ws_cashback, "L6", "(Tudo)")
+
+        ws_mtd_perf = wb.Sheets("MTD_Performance")
+        aplicar_filtro_dinamica(ws_mtd_perf, "A5", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_mtd_perf, "B1", "Deposit")
+        aplicar_filtro_dinamica(ws_mtd_perf, "B2", "Success")
+
+        ws_fortune = wb.Sheets("fortune")
+        aplicar_filtro_dinamica(ws_fortune, "A5", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_fortune, "B1", "danielfortune" )
+        aplicar_filtro_dinamica(ws_fortune, "B2", "Success")
+        aplicar_filtro_dinamica(ws_fortune, "B3", "Deposit")
+
         logger.info("Salvando arquivo de Transações (Isto pode demorar. Mãos longe do teclado!)...")
         wb.Save()
         wb.Close()
@@ -358,7 +447,8 @@ def carregar_base_transacoes(marca, *args, **kwargs):
 
 def carregar_base_ugs(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO CARREGAMENTO: UGS ({marca}) ===")
-    arquivo_base_oficial = obter_caminho_base(marca, "UGS", obter_data_alvo())
+    data_alvo = obter_data_alvo()
+    arquivo_base_oficial = obter_caminho_base(marca, "UGS", data_alvo)
     
     if not arquivo_base_oficial.exists():
         logger.warning("Arquivo oficial de UGS não encontrado.")
@@ -417,6 +507,20 @@ def carregar_base_ugs(marca, *args, **kwargs):
 
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
+
+        ws_din_completo = wb.Sheets("Din_Completo")
+        aplicar_filtro_dinamica(ws_din_completo, "A3", valor_desejado="(Tudo)", exceto="(blank)")
+
+        data_inicio = data_alvo.replace(day=1)
+        str_carimbo = f"dados alimentados de {data_inicio.strftime('%d/%m/%Y 00:00')} até {data_alvo.strftime('%d/%m/%Y 23:59')}"
+
+        for ws_aba in wb.Sheets:
+                if ws_aba.Name not in ["Din_Completo", "|"]:
+                    ultima_linha =  ws_aba.Cells(ws_aba.Rows.Count, "A").End(-4162).Row
+                    linha_carimbo = ultima_linha + 2
+                    cel = ws_aba.Cells(linha_carimbo, 1)
+                    cel.Value = str_carimbo
+                    cel.Font.Italic = True
         
         logger.info("Salvando arquivo de UGS (Paciência, quase lá!)...")
         wb.Save()
@@ -518,7 +622,16 @@ def carregar_base_kyc(marca, *args, **kwargs):
         logger.info("Sincronizando Tabelas Dinâmicas da aba 'DIN'...")
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
-        
+
+        ws_din_kyc = wb.Sheets("DIN")
+        aplicar_filtro_dinamica(ws_din_kyc, "B2", "True")
+        aplicar_filtro_dinamica(ws_din_kyc, "F1", "Sim")
+        aplicar_filtro_dinamica(ws_din_kyc, "F2", "True")
+        aplicar_filtro_dinamica(ws_din_kyc, "A4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din_kyc, "E4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din_kyc, "I4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din_kyc, "J4", valor_desejado="(Tudo)", exceto="(blank)")
+
         logger.info("Salvando arquivo de KYC...")
         wb.Save()
         wb.Close()
@@ -531,7 +644,8 @@ def carregar_base_kyc(marca, *args, **kwargs):
 
 def carregar_base_mtd(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO ATUALIZAÇÃO INCREMENTAL: MTD ({marca}) ===")
-    arquivo_mtd = obter_caminho_base(marca, "MTD", obter_data_alvo())
+    data_alvo = obter_data_alvo()
+    arquivo_mtd = obter_caminho_base(marca, "MTD", data_alvo)
     arquivo_ftd = _obter_caminho_download(marca, f"FTD - {marca}.xlsx")
 
     if not arquivo_mtd.exists() or not arquivo_ftd.exists():
@@ -636,6 +750,13 @@ def carregar_base_mtd(marca, *args, **kwargs):
         logger.info("Sincronizando Tabelas Dinâmicas da aba 'Din'...")
         atualizar_dinamicas(wb)
         excel.CalculateUntilAsyncQueriesDone()
+
+        ws_din = wb.Sheets("Din")
+        mes_str = MESES_PT[data_alvo.month][0].lower()
+        aplicar_filtro_dinamica(ws_din, "B1", "(Tudo)")
+        aplicar_filtro_dinamica(ws_din, "B2", mes_str)
+        aplicar_filtro_dinamica(ws_din, "A5", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din, "B4", valor_desejado="(Tudo)", exceto="(blank)")
         
         logger.info("Salvando arquivo MTD (Mãos longe do teclado!)...")
         wb.Save()
@@ -693,7 +814,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
     
     wb, excel = None, None
     try:
@@ -706,48 +827,57 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
         wb = excel.Workbooks.Open(str(arquivo_performance), UpdateLinks=0)
         ws = wb.Sheets("BaseGeral")
         
-        # --- LÓGICA DE ABERTURA DE MÊS AUTOMÁTICA ---
+# --- LÓGICA DE ABERTURA DE MÊS AUTOMÁTICA ---
         if not (datas_base == primeiro_dia_mes).any():
             logger.info("⚠️ MÊS NOVO DETECTADO! Iniciando abertura automática do mês na BaseGeral...")
             ultima_linha_preenchida = ws.Cells(ws.Rows.Count, 1).End(-4162).Row
+            
+            # A referência (Coluna A) agora ganha +1 e se mantém para o mês todo
             ref_anterior = int(ws.Cells(ultima_linha_preenchida, 1).Value)
-            nova_ref = ref_anterior + 1
+            nova_ref_mes = ref_anterior + 1 
             
             dias_no_mes = calendar.monthrange(data_alvo.year, data_alvo.month)[1]
-            meses_pt = {1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"}
-            nome_mes = meses_pt[data_alvo.month]
+            nome_mes = MESES_PT[data_alvo.month][0]
             
             linha_inicio_nova = ultima_linha_preenchida + 1
             linha_fim_nova = linha_inicio_nova + dias_no_mes - 1
             
+            logger.info(" -> Clonando formatação visual da última linha...")
+            ws.Range(f"{ultima_linha_preenchida}:{ultima_linha_preenchida}").Copy()
+            ws.Range(f"{linha_inicio_nova}:{linha_fim_nova}").PasteSpecial(Paste=-4122) # Apenas formato
+            excel.CutCopyMode = False
+            
             logger.info(f" -> Criando {dias_no_mes} novas linhas para {nome_mes}...")
             for offset in range(dias_no_mes):
                 r = linha_inicio_nova + offset
-                ws.Cells(r, 1).Value = nova_ref
-                ws.Cells(r, 2).Value = f"{offset+1:02d}/{data_alvo.month:02d}/{data_alvo.year}"
+                dia_numero = offset + 1
+                
+                ws.Cells(r, 1).Value = nova_ref_mes
+                # Injeção de data nativa e segura
+                ws.Cells(r, 2).Value = datetime(data_alvo.year, data_alvo.month, dia_numero) # noqa: DTZ001
                 ws.Cells(r, 3).Value = data_alvo.year
                 ws.Cells(r, 4).Value = nome_mes
-                ws.Cells(r, 5).Value = offset + 1
+                ws.Cells(r, 5).Value = dia_numero
             
-            logger.info(" -> Arrastando fórmulas das Colunas F até I...")
-            ws.Range(f"F{ultima_linha_preenchida}:I{linha_fim_nova}").FillDown()
-            
-            logger.info(" -> Aplicando Estilo Zebrado no novo mês...")
-            tint_antigo = ws.Cells(ultima_linha_preenchida, 1).Interior.TintAndShade
-            
-            # Lê a cor da última linha para inverter:
-            novo_tint = -0.0499893185216834 if tint_antigo < -0.07 else -0.1499984740745262
-            
-            ws.Range(ws.Cells(linha_inicio_nova, 1), ws.Cells(linha_fim_nova, 65)).Interior.ThemeColor = 1
-            ws.Range(ws.Cells(linha_inicio_nova, 1), ws.Cells(linha_fim_nova, 65)).Interior.TintAndShade = novo_tint
+            logger.info(" -> Arrastando todos os blocos de fórmulas estendidas...")
+            # Lista modular: o FillDown traz a fórmula, mas sobrescreve a cor
+            blocos_formulas = ["F:I", "L:N", "V:W", "Y:AB", "AE:AE", "AH:AH", "AK:AK", "AN:AN", "AX:BE", "BG:BG", "BI:BJ"]
+            for bloco in blocos_formulas:
+                col_inicio, col_fim = bloco.split(':')
+                ws.Range(f"{col_inicio}{ultima_linha_preenchida}:{col_fim}{linha_fim_nova}").FillDown()
+
+            logger.info(" -> Alternando a cor de fundo (Zebrado Mensal) sobre as fórmulas...")
+            cor_antiga = ws.Cells(ultima_linha_preenchida, 1).Interior.ColorIndex
+            # Se o mês anterior era branco (2) ou sem cor (-4142), o novo vira cinza claro (15). Senão, tira a cor.
+            nova_cor = 15 if cor_antiga in [2, -4142] else -4142
+            ws.Range(f"A{linha_inicio_nova}:BM{linha_fim_nova}").Interior.ColorIndex = nova_cor
 
             wb.Save()
             logger.info("Mês aberto e formatado com sucesso! Prosseguindo com a injeção diária...")
             
-            df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,J,K", header=0)
-            datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
-            idx_inicio_pandas = datas_base[datas_base == primeiro_dia_mes].index[0]
-            linha_excel_inicio = idx_inicio_pandas + 2 
+            # Atalho inteligente
+            idx_inicio_pandas = linha_inicio_nova - 2
+            linha_excel_inicio = linha_inicio_nova 
         else:
             idx_inicio_pandas = datas_base[datas_base == primeiro_dia_mes].index[0]
             linha_excel_inicio = idx_inicio_pandas + 2
@@ -844,7 +974,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
     
     if not (datas_base == primeiro_dia_mes).any():
         logger.error(f"A data {primeiro_dia_mes.strftime('%d/%m/%Y')} não foi encontrada na coluna B da BaseGeral!")
@@ -968,7 +1098,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
     
     if not (datas_base == primeiro_dia_mes).any():
         logger.error(f"A data {primeiro_dia_mes.strftime('%d/%m/%Y')} não foi encontrada na coluna B da BaseGeral!")
@@ -1079,7 +1209,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
     
     if not (datas_base == primeiro_dia_mes).any():
         logger.error(f"A data {primeiro_dia_mes.strftime('%d/%m/%Y')} não foi encontrada na coluna B da BaseGeral!")
@@ -1206,7 +1336,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    datas_base = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
     
     if not (datas_base == primeiro_dia_mes).any():
         logger.error(f"A data {primeiro_dia_mes.strftime('%d/%m/%Y')} não foi encontrada na coluna B da BaseGeral!")
@@ -1341,7 +1471,8 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     
     data_alvo = obter_data_alvo()
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    idx_inicio = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')[lambda x: x == primeiro_dia_mes].index[0]
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
+    idx_inicio = datas_base[datas_base == primeiro_dia_mes].index[0]
     linha_excel_inicio = idx_inicio + 2 
     
     colunas_auditar = {
@@ -1412,7 +1543,8 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
     
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,AS", header=0)
     primeiro_dia_mes = pd.Timestamp(year=data_alvo.year, month=data_alvo.month, day=1)
-    idx_inicio = pd.to_datetime(df_base.iloc[:, 0], errors='coerce')[lambda x: x == primeiro_dia_mes].index[0]
+    datas_base = pd.to_datetime(df_base.iloc[:, 0], dayfirst=True, errors='coerce').dt.normalize()
+    idx_inicio = datas_base[datas_base == primeiro_dia_mes].index[0]
     linha_excel_inicio = idx_inicio + 2 
 
     dados_AS = []

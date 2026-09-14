@@ -27,7 +27,7 @@ except ValueError as e:
     logger.critical(f"Erro fatal ao carregar as configurações das marcas: {e}")
     sys.exit(1)
 
-# ------------ Diretórios e Cosntantes Básicas ------------ 
+# ------------ Diretórios e Constantes Básicas ------------ 
 PASTA_RAIZ: Final[Path] = Path.home() / "Downloads"
 TXT_ORGANICOS: Final[str] = "Orgânicos"
 
