@@ -12,7 +12,7 @@ from config.settings import (
     LogDivisors,
     Seletores,
 )
-from utils.date_utils import obter_data_alvo, obter_periodo_extracao
+from utils.date_utils import calcular_limite_seguro, obter_data_alvo, obter_periodo_extracao
 from utils.file_utils import obter_pasta_download_diario, obter_pasta_ugs_diario
 
 logger = logging.getLogger(__name__)
@@ -224,7 +224,8 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     # Agora o Playwright só entra em ação para os dias que realmente faltam
     for dia_alvo in dias_diarios_faltantes:
         d_inicio = dia_alvo.strftime("%d-%m-%Y 00:00")
-        d_fim = dia_alvo.strftime("%d-%m-%Y 23:59")
+        # Limite seguro: dia seguinte às 00:00, para não perder o último minuto do dia_alvo.
+        d_fim = calcular_limite_seguro(dia_alvo).strftime("%d-%m-%Y %H:%M")
         nome_dia = dia_alvo.strftime("%d-%m")
         
         page.fill(Seletores.Filtros.DATE_FROM, d_inicio)
@@ -302,6 +303,8 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         for dia in range(1, dias_fechados + 1):
             # Substitui o 'hoje.replace' por uma formatação de data cravada
             data_loop = f"{dia:02d}-{mes_alvo:02d}-{ano_alvo}"
+            # Limite seguro: dia seguinte às 00:00, para não perder o último minuto do dia.
+            data_loop_fim = calcular_limite_seguro(datetime(ano_alvo, mes_alvo, dia)).strftime("%d-%m-%Y %H:%M")
             logger.info(f" -> Extraindo dados do dia {data_loop}...")
             
             # =========================================================
@@ -317,7 +320,7 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
                 loc_to = page.locator(Seletores.Filtros.DATE_TO)
                 loc_to.click()
                 loc_to.clear()
-                loc_to.press_sequentially(f"{data_loop} 23:59", delay=50)
+                loc_to.press_sequentially(data_loop_fim, delay=50)
                 
                 page.click(Seletores.Botoes.OK)
                 

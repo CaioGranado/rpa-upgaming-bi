@@ -2,10 +2,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto=None):
     try:
         rng = sheet.Range(celula)
@@ -67,6 +63,15 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
             
             if not item_encontrado:
                 logger.debug(f"Item para exclusão '{exceto}' não encontrado. (Tudo) mantido.")
+                logger.info(
+                    f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                    f"Modo='Exclusão' Item_solicitado='{exceto}' Resultado='Não encontrado, (Tudo) mantido'"
+                )
+            else:
+                logger.info(
+                    f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                    f"Modo='Exclusão' Item_ocultado='{exceto}'"
+                )
             return
 
         # 2. Cenário: Múltipla Seleção (Lista de itens)
@@ -75,37 +80,70 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
             try: pivot_field.EnableMultiplePageItems = True
             except: pass
 
+            itens_ocultados = []
             for item in pivot_field.PivotItems():
                 if str(item.Name).strip() not in valor_desejado:
                     try:
                         item.Visible = False
+                        itens_ocultados.append(str(item.Name).strip())
                     except Exception as e:
                         logger.debug(f"Falha ao ocultar item não desejado '{item.Name}': {e}")
+
+            logger.info(
+                f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                f"Modo='Múltipla Seleção' Itens_mantidos={valor_desejado} Itens_ocultados={itens_ocultados}"
+            )
             return
 
         # 3. Cenário: Resetar (Tudo)
         if valor_desejado == "(Tudo)":
             pivot_field.ClearAllFilters()
+            logger.info(
+                f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                f"Modo='Reset' Resultado='(Tudo) selecionado'"
+            )
             return
         
         # 4. Cenário Padrão: Seleção Única com Fallback
         pivot_field.ClearAllFilters()
         try:
             pivot_field.CurrentPage = valor_desejado
+            logger.info(
+                f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                f"Modo='Seleção Única' Valor_aplicado='{valor_desejado}' Origem='Solicitado'"
+            )
         except Exception:
             if fallback:
                 logger.warning(f"Filtro '{valor_desejado}' não encontrado em {sheet.Name}!{celula}")
                 if fallback == "(Tudo)":
                     pivot_field.ClearAllFilters()
+                    logger.info(
+                        f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                        f"Modo='Seleção Única' Valor_solicitado='{valor_desejado}' Valor_aplicado='(Tudo)' Origem='Fallback'"
+                    )
                 else:
                     try:
                         pivot_field.CurrentPage = fallback
+                        logger.info(
+                            f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                            f"Modo='Seleção Única' Valor_solicitado='{valor_desejado}' Valor_aplicado='{fallback}' Origem='Fallback'"
+                        )
                     except Exception:
                         logger.warning(f"Fallback '{fallback}' também falhou. Mantendo aba sem filtros.")
                         pivot_field.ClearAllFilters()
+                        logger.info(
+                            f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                            f"Modo='Seleção Única' Valor_solicitado='{valor_desejado}' Fallback_solicitado='{fallback}' "
+                            f"Valor_aplicado='(Tudo)' Origem='Fallback falhou, reset aplicado'"
+                        )
             else:
                 logger.warning(f"Filtro '{valor_desejado}' ausente em {sheet.Name}!{celula}. Nenhum fallback definido, ignorando")
                 pivot_field.ClearAllFilters()
+                logger.info(
+                    f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
+                    f"Modo='Seleção Única' Valor_solicitado='{valor_desejado}' Valor_aplicado='(Tudo)' "
+                    f"Origem='Sem fallback definido, reset aplicado'"
+                )
 
     except Exception as e:
         nome_aba = getattr(sheet, "Name", "Desconhecido")

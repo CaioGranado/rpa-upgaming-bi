@@ -5,6 +5,7 @@ import openpyxl
 import pandas as pd
 
 from config.settings import TXT_ORGANICOS
+from utils.date_utils import calcular_limite_seguro
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,10 @@ def blindar_dados(df: pd.DataFrame) -> pd.DataFrame:
 
 def aplicar_corte_datas_futuras(df: pd.DataFrame, coluna_data: str, data_alvo) -> pd.DataFrame:
     if coluna_data in df.columns:
-        limite_corte = pd.Timestamp(data_alvo.date()) + pd.Timedelta(days=1)
+        # .replace(tzinfo=None): data_alvo chega com timezone, mas os timestamps
+        # vindos do Excel (datas_temporarias, abaixo) são naive. Mantém o mesmo
+        # comportamento do código original (que usava apenas data_alvo.date()).
+        limite_corte = pd.Timestamp(calcular_limite_seguro(data_alvo).replace(tzinfo=None))
 
         datas_temporarias = pd.to_datetime(df[coluna_data], dayfirst=True, errors='coerce')
         eh_vazio_real = df[coluna_data].astype(str).str.strip().isin(['', 'nan', 'NaT', 'None', '<NA>'])
@@ -248,4 +252,4 @@ def garantir_continuidade_temporal(df_extraido: pd.DataFrame, limite_dia: int) -
         else:
             df_completo[col] = pd.to_numeric(df_completo[col], errors='coerce').fillna(0)   
 
-    return df_completo 
+    return df_completo
