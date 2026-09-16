@@ -50,8 +50,10 @@ def main():
         logger.info(" ETAPA 1: EXTRAÇÃO WEB (PLAYWRIGHT) ")
         logger.info(LogDivisors.MAIN)
         
-        # O Web Scraper faz o loop nas 3 marcas, cria as pastas diárias e devolve a lista de arquivos
-        arquivos_baixados = extrair_dados_upgaming()
+        # O Web Scraper faz o loop nas 3 marcas, cria as pastas diárias e devolve
+        # a lista de arquivos + o sinal explícito de quais marcas ficaram incompletas
+        # (com a lista do que faltou em cada uma).
+        arquivos_baixados, marcas_incompletas = extrair_dados_upgaming()
         
         if not arquivos_baixados:
             logger.error("Nenhum arquivo foi baixado. Abortando pipeline.")
@@ -74,11 +76,17 @@ def main():
         logger.info(" ETAPA 3: CARREGAMENTO NAS BASES OFICIAIS ")
         logger.info(LogDivisors.MAIN)
         
-        # Loop pythônico limpo (sem o .keys())
         for marca in MARCAS_CONFIG:
             logger.info(LogDivisors.SUB)
             logger.info(f" >>> INICIANDO INJEÇÃO PARA A MARCA: {marca.upper()} <<< ")
             logger.info(LogDivisors.SUB)
+
+            if marca in marcas_incompletas:
+                logger.warning(
+                    f"[MARCA PULADA] {marca.upper()}: extração incompleta na Etapa 1 "
+                    f"(faltando: {marcas_incompletas[marca]}). Injeção ignorada para esta marca."
+                )
+                continue
             
             # 3.1 - Relatórios Históricos e Individuais
             atualizar_base_completa_historica(marca)

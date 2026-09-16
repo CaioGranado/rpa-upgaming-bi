@@ -13,9 +13,41 @@ from config.settings import (
     Seletores,
 )
 from utils.date_utils import calcular_limite_seguro, obter_data_alvo, obter_periodo_extracao
-from utils.file_utils import obter_pasta_download_diario, obter_pasta_ugs_diario
+from utils.exceptions_utils import FormatoInvalidoError
+from utils.file_utils import obter_pasta_download_diario, obter_pasta_ugs_diario, validar_formato_xlsx
 
 logger = logging.getLogger(__name__)
+
+# Rótulos de contagem fixa esperados por marca (não inclui UGS_Diario,
+# que tem contagem variável — tratado separadamente via contadores).
+_ROTULOS_FIXOS_ESPERADOS = [
+    "NC", "Transacoes", "UGS_Completo", "UGS_ST", "UGS_LC", "UGS_SB", "UGS_MG",
+    "FTD", "GeneralStats",
+]
+
+
+def _novo_checklist() -> dict:
+    """Cria um checklist zerado para o início da extração de uma marca."""
+    checklist = {rotulo: False for rotulo in _ROTULOS_FIXOS_ESPERADOS}
+    checklist["UGS_Diario_esperados"] = 0
+    checklist["UGS_Diario_obtidos"] = 0
+    return checklist
+
+
+def _avaliar_checklist(checklist: dict) -> tuple[bool, list[str]]:
+    """
+    Avalia se a marca extraiu TODOS os arquivos esperados.
+    Retorna (completo, lista_de_faltantes) — a lista nomeia exatamente o
+    que não foi obtido, para uso direto na mensagem de log.
+    """
+    faltantes = [rotulo for rotulo in _ROTULOS_FIXOS_ESPERADOS if not checklist[rotulo]]
+
+    esperados_diario = checklist["UGS_Diario_esperados"]
+    obtidos_diario = checklist["UGS_Diario_obtidos"]
+    if obtidos_diario < esperados_diario:
+        faltantes.append(f"UGS_Diario ({obtidos_diario}/{esperados_diario})")
+
+    return (len(faltantes) == 0, faltantes)
 
 def extrair_dados_upgaming():
     logger.info("Iniciando módulo de Extração Web...")
@@ -64,7 +96,7 @@ def extrair_dados_upgaming():
                     logger.info("Login confirmado com sucesso!")
                 except PlaywrightTimeoutError:
                     logger.error("Falha ao confirmar o login: Menu lateral não encontrado, abortando por segurança.")
-                    return arquivos_baixados
+                    return arquivos_baixados, {}
             else:
                 # 3. PROVA REAL DO COOKIE (Garante que não é uma tela de erro 502/Cloudflare)
                 logger.info("Avaliando sessão salva no cookie...")
@@ -73,28 +105,91 @@ def extrair_dados_upgaming():
                     logger.info("Sessão ativa confirmada! Menu carregado, pulando login manual...")
                 except PlaywrightTimeoutError:
                     logger.error("Estado desconhecido! Não é a tela de login, mas o menu não carregou. Possível erro de rede ou bloqueio.")
-                    return arquivos_baixados
+                    return arquivos_baixados, {}
 
             logger.info("Avaliando o período de extração...")
             data_inicio, data_fim, data_fim_nc = obter_periodo_extracao()
-            
-            # --- LOOP DE MARCAS ---
-            for marca_arquivo, marca_bo in MARCAS_CONFIG.items():
-                _extrair_relatorios_marca(
-                    page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc, arquivos_baixados
-                )
 
-            return arquivos_baixados
+            marcas_incompletas = {}
+            lista_marcas = list(MARCAS_CONFIG.items())
+
+            # --- LOOP DE MARCAS ---
+            for indice_marca, (marca_arquivo, marca_bo) in enumerate(lista_marcas):
+                logger.info(LogDivisors.SUB)
+                logger.info(f" >>> INICIANDO EXTRAÇÃO PARA A MARCA: {marca_arquivo.upper()} <<<")
+                logger.info(LogDivisors.SUB)
+
+                checklist = _novo_checklist()
+                browser_morreu = False
+
+                try:
+                    _extrair_relatorios_marca(
+                        page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+                        arquivos_baixados, checklist
+                    )
+                except FormatoInvalidoError as e:
+                    # Arquivo chegou num formato inesperado — pipeline dessa marca é interrompido
+                    # aqui. O checklist já reflete o que foi obtido até este ponto.
+                    logger.error(
+                        f"[MARCA INTERROMPIDA] {marca_arquivo.upper()}: formato inválido detectado "
+                        f"na extração. Detalhes: {e}"
+                    )
+                except Exception as e:
+                    # TargetClosedError: o browser fechou — o objeto 'page' está morto e não
+                    # tem como recuperar no mesmo ciclo. Continuar o loop só geraria o mesmo
+                    # erro em cascata para as marcas seguintes. Encerramos o loop aqui.
+                    if "TargetClosedError" in type(e).__name__ or "Target page" in str(e):
+                        logger.error(
+                            f"[BROWSER FECHADO] {marca_arquivo.upper()}: o browser foi encerrado "
+                            f"inesperadamente durante a extração desta marca. As marcas restantes "
+                            f"não podem ser extraídas neste ciclo — encerrando loop de extração."
+                        )
+                        browser_morreu = True
+                    else:
+                        # Qualquer outro erro (timeout, seletor, rede, etc.): loga com traceback
+                        # completo para diagnóstico. O checklist reflete o que foi obtido até aqui.
+                        logger.exception(
+                            f"[ERRO DE EXTRAÇÃO] {marca_arquivo.upper()}: erro inesperado durante "
+                            f"a extração."
+                        )
+
+                # Avalia o checklist desta marca — independente de ter dado exceção ou não,
+                # é a fonte da verdade sobre o que realmente foi obtido.
+                completo, faltantes = _avaliar_checklist(checklist)
+                if completo:
+                    logger.info(f"[MARCA COMPLETA] {marca_arquivo.upper()}: todos os arquivos esperados foram obtidos.")
+                else:
+                    marcas_incompletas[marca_arquivo] = faltantes
+                    logger.warning(
+                        f"[MARCA INCOMPLETA] {marca_arquivo.upper()}: faltando {faltantes}. "
+                        f"Esta marca será pulada nas Etapas 2 e 3."
+                    )
+
+                if browser_morreu:
+                    # Marca todas as marcas restantes (que nem chegaram a ser tentadas) como
+                    # incompletas também, para que o sinal devolvido seja completo e confiável.
+                    for _, (marca_restante, _) in enumerate(lista_marcas[indice_marca + 1:]):
+                        marcas_incompletas[marca_restante] = ["TODOS - browser encerrado antes de tentar esta marca"]
+                    break
+
+            return arquivos_baixados, marcas_incompletas
 
     except Exception:
         logger.exception("FALHA CRÍTICA NA EXTRAÇÃO:")
-        return arquivos_baixados
+        return arquivos_baixados, {}
 
 
-def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc, arquivos_baixados):
+def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc, arquivos_baixados, checklist):
     """
     Função auxiliar criada para reduzir a 'Complexidade Cognitiva' do código.
     Ela processa os relatórios individualmente para a marca passada.
+
+    `checklist` é um dict mutável (passado por referência) que marca True em
+    cada chave conforme o respectivo download é validado com sucesso. Como é
+    o mesmo objeto durante toda a chamada, se uma exceção interromper a função
+    no meio, o chamador ainda enxerga quais itens ficaram concluídos e quais
+    faltaram — usado para decidir se a marca está "completa" o suficiente
+    para seguir para as Etapas 2 e 3.
     """
     logger.info(LogDivisors.MAIN)
     logger.info(f" EXTRAINDO MARCA: {marca_arquivo}")
@@ -128,7 +223,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     
     arq_nc = str(pasta_destino / f"NC - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_nc)
+    validar_formato_xlsx(Path(arq_nc))
     arquivos_baixados.append(arq_nc)
+    checklist["NC"] = True
     logger.info(f"Salvo: {arq_nc}")
 
     # [2/6] SYSTEM TRANSACTIONS
@@ -165,7 +262,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     
     arq_trans = str(pasta_destino / f"Transações - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_trans)
+    validar_formato_xlsx(Path(arq_trans))
     arquivos_baixados.append(arq_trans)
+    checklist["Transacoes"] = True
     logger.info(f"Salvo: {arq_trans}")
 
     # [3/6] UGS ACUMULADO
@@ -190,7 +289,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
             page.click(Seletores.Botoes.EXPORT)
         arq_ugs = str(pasta_destino / f"{marca_arquivo} - UGS {sigla}.xlsx")
         download_info.value.save_as(arq_ugs)
+        validar_formato_xlsx(Path(arq_ugs))
         arquivos_baixados.append(arq_ugs)
+        checklist[f"UGS_{sigla}"] = True
         logger.info(f"Salvo: {arq_ugs}")
 
     # [4/6] UGS DIÁRIO (Buscador Dinâmico de Lacunas)
@@ -221,6 +322,8 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     else:
         logger.info(f" Foram encontradas {len(dias_diarios_faltantes)} lacunas. Iniciando download...")
 
+    checklist["UGS_Diario_esperados"] = len(dias_diarios_faltantes)
+
     # Agora o Playwright só entra em ação para os dias que realmente faltam
     for dia_alvo in dias_diarios_faltantes:
         d_inicio = dia_alvo.strftime("%d-%m-%Y 00:00")
@@ -241,7 +344,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         arq_ugs_diario = str(pasta_ugs_alvo / f"{nome_dia}.xlsx")
         
         download_info.value.save_as(arq_ugs_diario)
+        validar_formato_xlsx(Path(arq_ugs_diario))
         arquivos_baixados.append(arq_ugs_diario)
+        checklist["UGS_Diario_obtidos"] += 1
         logger.info(f"Salvo UGS Diário: {arq_ugs_diario}")
 
     # [5/6] FTD
@@ -262,7 +367,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     
     arq_ftd = str(pasta_destino / f"FTD - {marca_arquivo}.xlsx")
     download_info.value.save_as(arq_ftd)
+    validar_formato_xlsx(Path(arq_ftd))
     arquivos_baixados.append(arq_ftd)
+    checklist["FTD"] = True
     logger.info(f"Salvo: {arq_ftd}")
     
     # =====================================================================
@@ -353,4 +460,5 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         json.dump(dados_json_mensal, f, ensure_ascii=False, indent=4)
         
     arquivos_baixados.append(arq_gs)
+    checklist["GeneralStats"] = True
     logger.info(f"Salvo (JSON API): {arq_gs}")

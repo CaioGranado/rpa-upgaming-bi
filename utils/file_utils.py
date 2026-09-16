@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -5,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import BASE_PATH
+from utils.exceptions_utils import FormatoInvalidoError
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +160,109 @@ def obter_caminho_base(marca: str, relatorio: str, data_alvo: datetime) -> Path:
         caminho_final = garantir_arquivo_existente(caminho_final, pasta_destino)
 
     return caminho_final
+
+# =============================================================================
+# 5. VALIDAÇÃO DE FORMATO DE ARQUIVO PÓS-DOWNLOAD
+# =============================================================================
+def _detectar_formato_real(caminho: Path) -> str:
+    """
+    Detecta o formato real do arquivo pelos primeiros bytes (assinatura/magic
+    number), independente da extensão do nome — que pode estar errada, como
+    vimos no caso do Export de Transações vindo em JSON com extensão .xlsx.
+
+    Retorna "xlsx" (assinatura ZIP, 'PK'), "json" (começa com '{' ou '['),
+    ou "desconhecido" (nenhum dos dois — ex: HTML de erro, arquivo vazio).
+
+    LIMITAÇÃO CONHECIDA (aceita deliberadamente em 16/09/2026): não reconhece
+    .xls legado (formato OLE2, assinatura D0 CF 11 E0) — seria classificado
+    como "desconhecido" e rejeitado. Não implementado porque o fluxo atual de
+    download sempre salva com extensão/conteúdo .xlsx; revisar se algum dia
+    isso mudar.
+    """
+    try:
+        with open(caminho, 'rb') as f:
+            inicio = f.read(4)
+    except Exception:
+        return "desconhecido"
+
+    if inicio[:2] == b'PK':
+        return "xlsx"
+
+    inicio_sem_espacos = inicio.lstrip()
+    if inicio_sem_espacos[:1] in (b'{', b'['):
+        return "json"
+
+    return "desconhecido"
+
+
+def _diagnosticar_json_inesperado(caminho: Path, nome_arquivo: str) -> str:
+    """
+    Tenta extrair um diagnóstico específico quando o arquivo é JSON — caso
+    mais comum: endpoint de export devolvendo resposta de API paginada
+    (campo 'count' indica o total real de registros) em vez do xlsx completo.
+
+    Retorna a mensagem de diagnóstico formatada para uso em FormatoInvalidoError.
+    """
+    try:
+        with open(caminho, 'r', encoding='utf-8') as f:
+            dados = json.load(f)
+
+        if isinstance(dados, list) and dados and isinstance(dados[0], dict):
+            qtd_recebida = len(dados)
+            total_esperado = dados[0].get('count')
+
+            if isinstance(total_esperado, int) and total_esperado > qtd_recebida:
+                return (
+                    f"{nome_arquivo}: Export voltou em JSON paginado (recebidos "
+                    f"{qtd_recebida} de {total_esperado} registros esperados pelo campo "
+                    f"'count'). Possível regressão no endpoint do BackOffice — o export "
+                    f"está devolvendo a resposta de API usada para paginação on-screen "
+                    f"em vez do relatório completo. Contatar time responsável pelo BO."
+                )
+
+        return (
+            f"{nome_arquivo}: Export voltou em JSON em vez de xlsx, "
+            f"mas em estrutura inesperada (não é uma lista de registros com 'count'). "
+            f"Verificar manualmente."
+        )
+
+    except Exception:
+        return (
+            f"{nome_arquivo}: arquivo não veio em xlsx e também não pôde ser "
+            f"interpretado como JSON válido. Verificar manualmente."
+        )
+
+
+def validar_formato_xlsx(caminho: Path) -> None:
+    """
+    Valida que o arquivo salvo é de fato um xlsx (assinatura ZIP/PK).
+    Deve ser chamada logo após cada download_info.value.save_as(), antes
+    de appendar o caminho em arquivos_baixados.
+
+    Levanta FormatoInvalidoError com diagnóstico específico se o formato
+    não for xlsx — interrompendo o pipeline da marca afetada antes de
+    tentar tratar ou injetar dados incompletos/incorretos.
+
+    Não deve ser usada para o General Statistics, que é capturado
+    intencionalmente como JSON via interceptação de rede.
+    """
+    nome_arquivo = caminho.name
+    formato = _detectar_formato_real(caminho)
+
+    if formato == "xlsx":
+        logger.info(f"[FORMATO OK] {nome_arquivo}: xlsx confirmado por assinatura de bytes.")
+        return
+
+    if formato == "json":
+        diagnostico = _diagnosticar_json_inesperado(caminho, nome_arquivo)
+        logger.error(f"[FORMATO INVÁLIDO] {diagnostico}")
+        raise FormatoInvalidoError(diagnostico)
+
+    # Formato desconhecido (HTML de erro, arquivo vazio, etc.)
+    msg = (
+        f"{nome_arquivo}: arquivo não reconhecido como xlsx nem como JSON "
+        f"(assinatura de bytes não corresponde a nenhum dos dois). "
+        f"Verificar manualmente."
+    )
+    logger.error(f"[FORMATO INVÁLIDO] {msg}")
+    raise FormatoInvalidoError(msg)
