@@ -12,17 +12,25 @@ from config.settings import (
     LogDivisors,
     Seletores,
 )
-from utils.date_utils import calcular_limite_seguro, obter_data_alvo, obter_periodo_extracao
+from utils.date_utils import (
+    calcular_limite_seguro,
+    obter_data_alvo,
+    obter_periodo_extracao,
+)
 from utils.exceptions_utils import FormatoInvalidoError
-from utils.file_utils import obter_pasta_download_diario, obter_pasta_ugs_diario, validar_formato_xlsx
+from utils.file_utils import (
+    obter_pasta_download_diario,
+    obter_pasta_ugs_diario,
+    validar_formato_xlsx,
+)
 
 logger = logging.getLogger(__name__)
 
-# Rótulos de contagem fixa esperados por marca (não inclui UGS_Diario,
-# que tem contagem variável — tratado separadamente via contadores).
+# Rótulos de contagem fixa esperados por marca (não inclui UGS_Diario nem
+# GeneralStats, que têm contagem variável — tratados via contadores abaixo).
 _ROTULOS_FIXOS_ESPERADOS = [
     "NC", "Transacoes", "UGS_Completo", "UGS_ST", "UGS_LC", "UGS_SB", "UGS_MG",
-    "FTD", "GeneralStats",
+    "FTD",
 ]
 
 
@@ -31,6 +39,13 @@ def _novo_checklist() -> dict:
     checklist = {rotulo: False for rotulo in _ROTULOS_FIXOS_ESPERADOS}
     checklist["UGS_Diario_esperados"] = 0
     checklist["UGS_Diario_obtidos"] = 0
+    # GeneralStats tem loop interno por dia que tolera falha de dias individuais
+    # (de propósito — um dia ruim não deveria abortar o mês inteiro). Por isso
+    # rastreamos quantos dias eram esperados vs. quantos realmente vieram, em
+    # vez de um booleano "arquivo foi salvo" (que seria verdade mesmo faltando
+    # metade dos dias).
+    checklist["GeneralStats_esperados"] = 0
+    checklist["GeneralStats_obtidos"] = 0
     return checklist
 
 
@@ -47,7 +62,13 @@ def _avaliar_checklist(checklist: dict) -> tuple[bool, list[str]]:
     if obtidos_diario < esperados_diario:
         faltantes.append(f"UGS_Diario ({obtidos_diario}/{esperados_diario})")
 
+    esperados_gs = checklist["GeneralStats_esperados"]
+    obtidos_gs = checklist["GeneralStats_obtidos"]
+    if obtidos_gs < esperados_gs:
+        faltantes.append(f"GeneralStats ({obtidos_gs}/{esperados_gs})")
+
     return (len(faltantes) == 0, faltantes)
+
 
 def extrair_dados_upgaming():
     logger.info("Iniciando módulo de Extração Web...")
@@ -405,6 +426,7 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     ano_alvo = data_alvo.year
 
     dados_json_mensal = []
+    checklist["GeneralStats_esperados"] = dias_fechados
 
     if dias_fechados > 0:
         for dia in range(1, dias_fechados + 1):
@@ -460,5 +482,7 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
         json.dump(dados_json_mensal, f, ensure_ascii=False, indent=4)
         
     arquivos_baixados.append(arq_gs)
-    checklist["GeneralStats"] = True
-    logger.info(f"Salvo (JSON API): {arq_gs}")
+    checklist["GeneralStats_obtidos"] = len(dados_json_mensal)
+    logger.info(
+        f"Salvo (JSON API): {arq_gs} — {len(dados_json_mensal)}/{dias_fechados} dias obtidos."
+    )

@@ -16,7 +16,7 @@ from transformers.data_cleaner import (
     blindar_dados,
     garantir_continuidade_temporal,
 )
-from utils.date_utils import obter_data_alvo
+from utils.date_utils import calcular_limite_seguro, obter_data_alvo
 from utils.excel_utils import aplicar_filtro_dinamica
 from utils.file_utils import (
     MESES_PT,
@@ -237,6 +237,8 @@ def carregar_base_nc(marca, *args, **kwargs):
         ws_din = wb.Sheets("Din_Diario")
         aplicar_filtro_dinamica(ws_din, "B1", valor_desejado="(Tudo)")
         aplicar_filtro_dinamica(ws_din, "F1", valor_desejado="Orgânicos")
+        aplicar_filtro_dinamica(ws_din, "A3", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din, "E3", valor_desejado="(Tudo)", exceto="(blank)")
 
         ws_din_regiao = wb.Sheets("Din_Regiao")
         aplicar_filtro_dinamica(ws_din_regiao, "B2", valor_desejado="Orgânicos")
@@ -512,7 +514,7 @@ def carregar_base_ugs(marca, *args, **kwargs):
         aplicar_filtro_dinamica(ws_din_completo, "A3", valor_desejado="(Tudo)", exceto="(blank)")
 
         data_inicio = data_alvo.replace(day=1)
-        str_carimbo = f"dados alimentados de {data_inicio.strftime('%d/%m/%Y 00:00')} até {data_alvo.strftime('%d/%m/%Y 23:59')}"
+        str_carimbo = f"dados alimentados de {data_inicio.strftime('%d/%m/%Y 00:00')} até {calcular_limite_seguro(data_alvo).strftime('%d/%m/%Y %H:%M')}"
 
         for ws_aba in wb.Sheets:
                 if ws_aba.Name not in ["Din_Completo", "|"]:
