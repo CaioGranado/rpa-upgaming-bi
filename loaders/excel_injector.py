@@ -18,6 +18,7 @@ from transformers.data_cleaner import (
 )
 from utils.date_utils import calcular_limite_seguro, obter_data_alvo
 from utils.excel_utils import aplicar_filtro_dinamica
+from utils.exceptions_utils import DadosNaoConfiaveisError
 from utils.file_utils import (
     MESES_PT,
     obter_caminho_base,
@@ -581,45 +582,39 @@ def carregar_base_kyc(marca, *args, **kwargs):
         wb = excel.Workbooks.Open(str(arquivo_base_oficial))
         
         logger.info("Injetando dados e fórmulas na aba 'NC'...")
-        try:
-            ws_nc = wb.Sheets("NC")
-            ws_nc.Columns("V:V").NumberFormat = "0"
-            ultima_linha_antiga_nc = ws_nc.Cells(ws_nc.Rows.Count, 1).End(-4162).Row
-            if ultima_linha_antiga_nc >= 3:
-                ws_nc.Range(f"A3:AL{ultima_linha_antiga_nc}").ClearContents()
-            ws_nc.Range("A2:AI2").ClearContents()
-                
-            ws_nc.Range(ws_nc.Cells(2, 1), ws_nc.Cells(ultima_linha_nc, 35)).Value = dados_nc
+        ws_nc = wb.Sheets("NC")
+        ws_nc.Columns("V:V").NumberFormat = "0"
+        ultima_linha_antiga_nc = ws_nc.Cells(ws_nc.Rows.Count, 1).End(-4162).Row
+        if ultima_linha_antiga_nc >= 3:
+            ws_nc.Range(f"A3:AL{ultima_linha_antiga_nc}").ClearContents()
+        ws_nc.Range("A2:AI2").ClearContents()
             
-            if ultima_linha_nc > 2:
-                ws_nc.Range(f"AJ2:AL{ultima_linha_nc}").FillDown()
-                
-                logger.info("Aplicando Estilo Zebrado nas linhas novas do NC...")
-                ws_nc.Range("A2:AL3").Copy()
-                ws_nc.Range(f"A2:AL{ultima_linha_nc}").PasteSpecial(Paste=-4122)
-                excel.CutCopyMode = False
-        except Exception as e:
-            logger.error(f"Erro ao processar aba 'NC': {e}")
+        ws_nc.Range(ws_nc.Cells(2, 1), ws_nc.Cells(ultima_linha_nc, 35)).Value = dados_nc
+        
+        if ultima_linha_nc > 2:
+            ws_nc.Range(f"AJ2:AL{ultima_linha_nc}").FillDown()
+            
+            logger.info("Aplicando Estilo Zebrado nas linhas novas do NC...")
+            ws_nc.Range("A2:AL3").Copy()
+            ws_nc.Range(f"A2:AL{ultima_linha_nc}").PasteSpecial(Paste=-4122)
+            excel.CutCopyMode = False
         
         logger.info("Injetando dados e fórmulas na aba 'FTD'...")
-        try:
-            ws_ftd = wb.Sheets("FTD")
-            ultima_linha_antiga_ftd = ws_ftd.Cells(ws_ftd.Rows.Count, 1).End(-4162).Row
-            if ultima_linha_antiga_ftd >= 3:
-                ws_ftd.Range(f"A3:W{ultima_linha_antiga_ftd}").ClearContents()
-            ws_ftd.Range("A2:U2").ClearContents()
-                
-            ws_ftd.Range(ws_ftd.Cells(2, 1), ws_ftd.Cells(ultima_linha_ftd, 21)).Value = dados_ftd
+        ws_ftd = wb.Sheets("FTD")
+        ultima_linha_antiga_ftd = ws_ftd.Cells(ws_ftd.Rows.Count, 1).End(-4162).Row
+        if ultima_linha_antiga_ftd >= 3:
+            ws_ftd.Range(f"A3:W{ultima_linha_antiga_ftd}").ClearContents()
+        ws_ftd.Range("A2:U2").ClearContents()
             
-            if ultima_linha_ftd > 2:
-                ws_ftd.Range(f"V2:W{ultima_linha_ftd}").FillDown()
-                
-                logger.info("Aplicando Estilo Zebrado nas linhas novas do FTD...")
-                ws_ftd.Range("A2:W3").Copy()
-                ws_ftd.Range(f"A2:W{ultima_linha_ftd}").PasteSpecial(Paste=-4122)
-                excel.CutCopyMode = False
-        except Exception as e:
-            logger.error(f"Erro ao processar aba 'FTD': {e}")
+        ws_ftd.Range(ws_ftd.Cells(2, 1), ws_ftd.Cells(ultima_linha_ftd, 21)).Value = dados_ftd
+        
+        if ultima_linha_ftd > 2:
+            ws_ftd.Range(f"V2:W{ultima_linha_ftd}").FillDown()
+            
+            logger.info("Aplicando Estilo Zebrado nas linhas novas do FTD...")
+            ws_ftd.Range("A2:W3").Copy()
+            ws_ftd.Range(f"A2:W{ultima_linha_ftd}").PasteSpecial(Paste=-4122)
+            excel.CutCopyMode = False
         
         logger.info("Sincronizando Tabelas Dinâmicas da aba 'DIN'...")
         atualizar_dinamicas(wb)
@@ -1453,8 +1448,11 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     for dia in range(1, limite_dia + 1):
         json_do_dia = dados_por_dia.get(dia, [])
         if not json_do_dia:
-            logger.warning(f"⚠️ ALERTA: Dados do dia {dia:02d} não encontrados no JSON. Preenchendo com zeros.")
-            
+            raise DadosNaoConfiaveisError(
+                f"Dados do dia {dia:02d} não encontrados no JSON de General Statistics. "
+                f"Não é seguro preencher com zero sem confirmar a ausência real do dado."
+            )
+
         linha_excel = [0.0] * 16 
         for jogo in json_do_dia:
             tipo = jogo.get("gameType")
@@ -1557,15 +1555,21 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
         nome_arquivo = f"{dia:02d}-{mes_atual:02d}.xlsx"
         caminho_ugs = pasta_ugs / nome_arquivo
         
-        qtd_usuarios = 0
-        if caminho_ugs.exists():
-            try:
-                df_ugs = pd.read_excel(caminho_ugs, engine='calamine')
-                qtd_usuarios = len(df_ugs)
-            except Exception as e:
-                logger.error(f"Erro ao ler {nome_arquivo}: {e}")
-        else:
-            logger.warning(f"⚠️ ALERTA: Arquivo diário {nome_arquivo} não encontrado! Preenchendo com 0.")
+        if not caminho_ugs.exists():
+            raise DadosNaoConfiaveisError(
+                f"Arquivo diário {nome_arquivo} não encontrado. Não é seguro "
+                f"preencher Usuários Únicos com 0 sem confirmar a ausência real do dado."
+            )
+
+        try:
+            df_ugs = pd.read_excel(caminho_ugs, engine='calamine')
+        except Exception as e:
+            raise DadosNaoConfiaveisError(
+                f"Arquivo diário {nome_arquivo} não pôde ser lido ({e}). Não é seguro "
+                f"preencher Usuários Únicos com 0 sem confirmar o valor real."
+            ) from e
+
+        qtd_usuarios = len(df_ugs)
 
         dados_AS.append([qtd_usuarios])
         

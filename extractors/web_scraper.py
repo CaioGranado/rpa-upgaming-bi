@@ -83,9 +83,18 @@ def extrair_dados_upgaming():
                 channel="chrome", 
                 chromium_sandbox=True, 
                 ignore_default_args=["--no-sandbox", "--enable-automation"],
-                args=['--disable-blink-features=AutomationControlled'],
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 viewport={'width': 1280, 'height': 720}
+            )
+
+            # Substitui a flag '--disable-blink-features=AutomationControlled' (que o
+            # Chrome sinaliza com o aviso "linha de comando não suportada") por um
+            # init_script equivalente: sobrescreve navigator.webdriver via JS, antes de
+            # qualquer página carregar. Mesmo efeito de disfarce, sem o aviso visível —
+            # e tecnicamente mais discreto, já que não depende de uma flag de linha de
+            # comando que sites de detecção anti-bot também podem checar.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
             )
             
             page = context.pages[0]
