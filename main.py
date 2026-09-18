@@ -6,13 +6,14 @@ from pathlib import Path
 from config.settings import MARCAS_CONFIG, LogDivisors
 from extractors.web_scraper import extrair_dados_upgaming
 
-# Importa todas as funções de injeção
-from loaders.excel_injector import (
-    atualizar_base_completa_historica,
-    carregar_base_ftd,
-    carregar_base_kyc,
-    carregar_base_mtd,
-    carregar_base_nc,
+# Importa as funções de injeção — cada uma do seu módulo de responsabilidade
+# (antes vinham todas de loaders/excel_injector.py; ver modularização de 17/09/2026)
+from loaders.base_completa import atualizar_base_completa_historica
+from loaders.ftd import carregar_base_ftd
+from loaders.kyc import carregar_base_kyc
+from loaders.mtd import carregar_base_mtd
+from loaders.nc import carregar_base_nc
+from loaders.performance import (
     carregar_base_performance_step1,
     carregar_base_performance_step2,
     carregar_base_performance_step3,
@@ -20,9 +21,9 @@ from loaders.excel_injector import (
     carregar_base_performance_step5,
     carregar_base_performance_step6,
     carregar_base_performance_step7,
-    carregar_base_transacoes,
-    carregar_base_ugs,
 )
+from loaders.transacoes import carregar_base_transacoes
+from loaders.ugs import carregar_base_ugs
 from transformers.data_cleaner import tratar_relatorios_crus
 from utils.file_utils import MESES_PT
 

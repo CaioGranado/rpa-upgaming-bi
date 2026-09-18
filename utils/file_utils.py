@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import BASE_PATH
+from utils.date_utils import obter_data_alvo
 from utils.exceptions_utils import FormatoInvalidoError
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,32 @@ def obter_pasta_download_diario(marca: str) -> Path:
         caminho.mkdir(parents=True, exist_ok=True)
         
     return caminho
+
+def _obter_caminho_download(marca: str, nome_arquivo: str) -> Path:
+    pasta = obter_pasta_download_diario(marca)
+    caminho = pasta / nome_arquivo
+    if not caminho.exists():
+        logger.warning(f"Arquivo não encontrado no download diário: {caminho}")
+    return caminho
+
+def _fazer_backup(caminho_arquivo: Path):
+    if not caminho_arquivo.exists(): return
+    
+    data_referencia = obter_data_alvo()
+    ano = data_referencia.strftime("%Y")
+    mes_numero = data_referencia.strftime("%m")
+
+    mes_nome = MESES_PT[data_referencia.month][0]
+    pasta_mes = f"{mes_numero} - {mes_nome}"
+
+    pasta_bkp = caminho_arquivo.parent / "Backups" / ano / pasta_mes
+    pasta_bkp.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
+    nome_bkp = f"{caminho_arquivo.stem}_BKP_{timestamp}{caminho_arquivo.suffix}"
+
+    shutil.copy2(caminho_arquivo, pasta_bkp / nome_bkp)
+    logger.info(f" § Backup salvo em [{ano}/{pasta_mes}]: {nome_bkp}")
 
 def obter_pasta_ugs_diario(marca: str, ano: int, mes: int) -> Path:
     nome_pasta_mes = f"{mes:02d} - {MESES_PT[mes][0]}"

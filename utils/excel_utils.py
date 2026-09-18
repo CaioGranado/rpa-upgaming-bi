@@ -1,6 +1,31 @@
 import logging
 
+import pywintypes
+
 logger = logging.getLogger(__name__)
+
+def atualizar_dinamicas(wb):
+    logger.info("Sincronizando Tabelas Dinâmicas (RefreshAll)...")
+    for cache in wb.PivotCaches():
+        try: 
+            cache.BackgroundQuery = False
+        except pywintypes.com_error as e_cache: 
+            logger.debug(f"Propriedade BackgroundQuery ignorada neste cache: {e_cache}")
+
+        try:
+            cache.MissingItemsLimit = 0
+        except pywintypes.com_error as e_limit:
+            logger.debug(f"Falha ao limpar cache fantasma: {e_limit}")
+    wb.RefreshAll()
+
+def _fechar_excel_seguro(wb, excel):
+    try:
+        if wb: wb.Close(SaveChanges=False)
+        if excel: excel.Quit()
+    except pywintypes.com_error as e_quit:
+        logger.debug(f"Erro na interface COM ao forçar fechamento seguro: {e_quit}")
+    except AttributeError as e_attr:
+        logger.debug(f"Objeto inexistente durante o fechamento seguro: {e_attr}")
 
 def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto=None):
     try:
