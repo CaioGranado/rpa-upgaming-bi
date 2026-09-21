@@ -15,6 +15,6 @@ def formatar_num(valor):
     if pd.isna(valor): return "0"
     v = float(valor)
     if v.is_integer():
-        return f"{int(v):,}".replace(",", ".")
+        return formatar_int(valor)
     else:
-        return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return formatar_brl(v)

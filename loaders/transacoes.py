@@ -9,8 +9,18 @@ import win32com.client as win32
 
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import obter_data_alvo
-from utils.excel_utils import aplicar_filtro_dinamica, atualizar_dinamicas, _fechar_excel_seguro
-from utils.file_utils import MESES_PT, _fazer_backup, _obter_caminho_download, obter_caminho_base, obter_caminho_base_completa
+from utils.excel_utils import (
+    _fechar_excel_seguro,
+    aplicar_filtro_dinamica,
+    atualizar_dinamicas,
+)
+from utils.file_utils import (
+    MESES_PT,
+    _fazer_backup,
+    _obter_caminho_download,
+    obter_caminho_base,
+    obter_caminho_base_completa,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +83,7 @@ def carregar_base_transacoes(marca, *args, **kwargs):
         if ultima_linha_transacoes > 2:
             ws_sheet1.Range(f"AC2:AJ{ultima_linha_transacoes}").FillDown()
         
-        atualizar_dinamicas(wb)
-        excel.CalculateUntilAsyncQueriesDone()
+        atualizar_dinamicas(wb, excel)
 
         mes_str = MESES_PT[data_alvo.month][0].lower()
 
@@ -138,3 +147,4 @@ def carregar_base_transacoes(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico no carregamento de Transações:")
         _fechar_excel_seguro(wb, excel)
+        raise

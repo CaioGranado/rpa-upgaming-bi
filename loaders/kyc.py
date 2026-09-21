@@ -8,7 +8,11 @@ import win32com.client as win32
 
 from transformers.data_cleaner import aplicar_corte_datas_futuras, blindar_dados
 from utils.date_utils import obter_data_alvo
-from utils.excel_utils import aplicar_filtro_dinamica, atualizar_dinamicas, _fechar_excel_seguro
+from utils.excel_utils import (
+    _fechar_excel_seguro,
+    aplicar_filtro_dinamica,
+    atualizar_dinamicas,
+)
 from utils.file_utils import _fazer_backup, _obter_caminho_download, obter_caminho_base
 
 logger = logging.getLogger(__name__)
@@ -96,8 +100,7 @@ def carregar_base_kyc(marca, *args, **kwargs):
             excel.CutCopyMode = False
         
         logger.info("Sincronizando Tabelas Dinâmicas da aba 'DIN'...")
-        atualizar_dinamicas(wb)
-        excel.CalculateUntilAsyncQueriesDone()
+        atualizar_dinamicas(wb, excel)
 
         ws_din_kyc = wb.Sheets("DIN")
         aplicar_filtro_dinamica(ws_din_kyc, "B2", "True")
@@ -117,3 +120,4 @@ def carregar_base_kyc(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico no carregamento de KYC:")
         _fechar_excel_seguro(wb, excel)
+        raise

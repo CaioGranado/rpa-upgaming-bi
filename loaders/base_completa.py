@@ -94,3 +94,4 @@ def atualizar_base_completa_historica(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao atualizar Base Completa:")
         _fechar_excel_seguro(wb, excel)
+        raise

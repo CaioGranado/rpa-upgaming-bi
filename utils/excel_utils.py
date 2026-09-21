@@ -4,19 +4,25 @@ import pywintypes
 
 logger = logging.getLogger(__name__)
 
-def atualizar_dinamicas(wb):
+def atualizar_dinamicas(wb, excel):
     logger.info("Sincronizando Tabelas Dinâmicas (RefreshAll)...")
     for cache in wb.PivotCaches():
-        try: 
+        try:
             cache.BackgroundQuery = False
-        except pywintypes.com_error as e_cache: 
-            logger.debug(f"Propriedade BackgroundQuery ignorada neste cache: {e_cache}")
+        except pywintypes.com_error as e:
+            logger.warning(f"Propriedade BackgroundQuery não suportada neste cache: {e}")
 
         try:
             cache.MissingItemsLimit = 0
-        except pywintypes.com_error as e_limit:
-            logger.debug(f"Falha ao limpar cache fantasma: {e_limit}")
+        except pywintypes.com_error as e:
+            # Normal: MissingItemsLimit só existe para caches baseados em OLAP.
+            # Tabelas dinâmicas comuns (baseadas em intervalo de dados) sempre
+            # levantam esse erro aqui — não é sinal de dado não confiável.
+            logger.warning(f"Propriedade MissingItemsLimit não suportada neste cache (normal para caches não-OLAP): {e}")
+
     wb.RefreshAll()
+    excel.CalculateUntilAsyncQueriesDone()
+    logger.info("Tabelas Dinâmicas sincronizadas com sucesso.")
 
 def _fechar_excel_seguro(wb, excel):
     try:
@@ -41,16 +47,18 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
         # Estratégia 1: O campo está na própria célula (comum em Rótulos de Linha/Coluna)
         try:
             pivot_field = rng.PivotField
+            logger.debug(f"[{celula}] Campo encontrado via Estratégia 1 (PivotField direto): '{pivot_field.Name}'")
         except Exception:
-            pass
+            logger.debug(f"[{celula}] Estratégia 1 não aplicável (célula não é PivotField direto), tentando Estratégia 2...")
             
         # Estratégia 2: Filtro de Página clássico (Nome do campo fica na célula à esquerda)
         if pivot_field is None and rng.Column > 1:
             try:
                 nome_campo = str(sheet.Cells(rng.Row, rng.Column - 1).Value).strip()
                 pivot_field = pt.PivotFields(nome_campo)
+                logger.debug(f"[{celula}] Campo encontrado via Estratégia 2 (célula à esquerda): '{nome_campo}'")
             except Exception:
-                pass
+                logger.debug(f"[{celula}] Estratégia 2 não aplicável (célula à esquerda não mapeou campo), tentando Estratégia 3...")
                 
         # Estratégia 3: Fallback para "Rótulos de Linha" compactos (pega o campo de linha principal)
         if pivot_field is None:
@@ -58,13 +66,15 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
             if "Rótulo" in valor_texto or "Row" in valor_texto:
                 try:
                     pivot_field = pt.RowFields(1)
+                    logger.debug(f"[{celula}] Campo encontrado via Estratégia 3 (RowFields — valor célula: '{valor_texto}')")
                 except Exception:
-                    pass
+                    logger.debug(f"[{celula}] Estratégia 3 (RowFields) falhou — valor célula: '{valor_texto}'")
             elif "Coluna" in valor_texto or "Column" in valor_texto:
                 try:
                     pivot_field = pt.ColumnFields(1)
+                    logger.debug(f"[{celula}] Campo encontrado via Estratégia 3 (ColumnFields — valor célula: '{valor_texto}')")
                 except Exception:
-                    pass
+                    logger.debug(f"[{celula}] Estratégia 3 (ColumnFields) falhou — valor célula: '{valor_texto}'")
 
         # Se depois de tudo não achar o campo, aborta com elegância
         if pivot_field is None:

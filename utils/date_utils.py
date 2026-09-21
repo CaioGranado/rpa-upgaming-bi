@@ -53,10 +53,10 @@ def calcular_limite_seguro(data_referencia: datetime) -> datetime:
 def obter_periodo_extracao():
     alvo = obter_data_alvo()
     hoje_real = datetime.now(timezone.utc).astimezone()
-    data_inicio = alvo.replace(day=1).strftime("%d-%m-%Y 00:00")
+    data_inicio = alvo.replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%d-%m-%Y %H:%M")
     # Limite seguro (dia seguinte às 00:00) para não perder o último minuto do dia alvo.
     # Usado por: System Transactions, UGS Acumulado e FTD. NC continua de fora (ver docstring acima).
     data_fim = calcular_limite_seguro(alvo).strftime("%d-%m-%Y %H:%M")
-    data_fim_nc = hoje_real.strftime("%d-%m-%Y 23:59")
+    data_fim_nc = hoje_real.replace(hour=23, minute=59, second=0, microsecond=0).strftime("%d-%m-%Y %H:%M")
     
     return data_inicio, data_fim, data_fim_nc

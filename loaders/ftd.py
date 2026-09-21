@@ -8,7 +8,11 @@ import win32com.client as win32
 
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import obter_data_alvo
-from utils.excel_utils import aplicar_filtro_dinamica, atualizar_dinamicas, _fechar_excel_seguro
+from utils.excel_utils import (
+    _fechar_excel_seguro,
+    aplicar_filtro_dinamica,
+    atualizar_dinamicas,
+)
 from utils.file_utils import _fazer_backup, _obter_caminho_download, obter_caminho_base
 
 logger = logging.getLogger(__name__)
@@ -49,8 +53,7 @@ def carregar_base_ftd(marca, *args, **kwargs):
         if ultima_linha_destino > 2:
             ws.Range(f"V2:AD{ultima_linha_destino}").FillDown()
         
-        atualizar_dinamicas(wb)
-        excel.CalculateUntilAsyncQueriesDone()
+        atualizar_dinamicas(wb, excel)
 
         ws_din_afiliado = wb.Sheets("Din_Afiliados")
         aplicar_filtro_dinamica(ws_din_afiliado, "B2", valor_desejado="(Tudo)")
@@ -75,3 +78,4 @@ def carregar_base_ftd(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico no carregamento de FTD:")
         _fechar_excel_seguro(wb, excel)
+        raise
