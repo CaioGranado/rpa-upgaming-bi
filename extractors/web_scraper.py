@@ -72,6 +72,134 @@ def _avaliar_checklist(checklist: dict) -> tuple[bool, list[str]]:
     return (len(faltantes) == 0, faltantes)
 
 
+def _lancar_navegador_persistente(p):
+    """
+    Abre o Chrome com perfil persistente e o disfarce de automação
+    aplicado. Não navega nem faz login — só devolve a 'page' pronta
+    para uso.
+    """
+    pasta_perfil = str(Path.cwd() / "perfil_robo_chrome")
+    context = p.chromium.launch_persistent_context(
+        user_data_dir=pasta_perfil,
+        headless=False,
+        channel="chrome", 
+        chromium_sandbox=True, 
+        ignore_default_args=["--no-sandbox", "--enable-automation"],
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        viewport={'width': 1280, 'height': 720}
+    )
+
+    # Substitui a flag '--disable-blink-features=AutomationControlled' (que o
+    # Chrome sinaliza com o aviso "linha de comando não suportada") por um
+    # init_script equivalente: sobrescreve navigator.webdriver via JS, antes de
+    # qualquer página carregar. Mesmo efeito de disfarce, sem o aviso visível —
+    # e tecnicamente mais discreto, já que não depende de uma flag de linha de
+    # comando que sites de detecção anti-bot também podem checar.
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+    )
+
+    page = context.pages[0]
+    page.set_default_timeout(300000)
+    return page
+
+
+def _confirmar_sessao(page):
+    """
+    Navega até o sistema e garante que a sessão está ativa — via cookie
+    salvo, ou pedindo login manual se necessário.
+
+    Retorna (sucesso, motivo_falha). motivo_falha só é preenchido
+    (como lista, pronta para virar 'faltantes' do chamador) quando
+    sucesso=False.
+    """
+    page.goto(URL_SISTEMA)
+
+    # Espera o redirecionamento acontecer (caso o cookie seja inválido)
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
+        # Uma pequena pausa extra garante que a URL mude completamente
+        page.wait_for_timeout(1500)
+    except PlaywrightTimeoutError:
+        logger.debug("O carregamento inicial demorou mais que 10s. Seguindo para a avalição visual...")
+
+    # 1. VERIFICAÇÃO DA TELA DE LOGIN (URL + Visual da imagem corrigida)
+    is_login_url = "login.html" in page.url
+    is_login_visual = page.locator('text="Welcome To Admin Panel"').is_visible() or page.locator('input[name="username"]').is_visible()
+
+    # Se a URL acusou login OU a tela inicial apareceu, pede intervenção
+    if is_login_url or is_login_visual:
+        logger.warning("Página de login detectada (Sessão expirada).")
+        input("\n>>> Faça o login e resolva os reCAPTCHA, espere o painel inicial carregar e então pressione ENTER aqui...\n")
+
+        # 2. VALIDAÇÃO PÓS-LOGIN (Garante que a barra lateral apareceu)
+        try:
+            page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
+            logger.info("Login confirmado com sucesso!")
+            return True, None
+        except PlaywrightTimeoutError:
+            logger.error("Falha ao confirmar o login: Menu lateral não encontrado, abortando por segurança.")
+            return False, ["Falha ao confirmar login"]
+    else:
+        # 3. PROVA REAL DO COOKIE (Garante que não é uma tela de erro 502/Cloudflare)
+        logger.info("Avaliando sessão salva no cookie...")
+        try:
+            page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
+            logger.info("Sessão ativa confirmada! Menu carregado, pulando login manual...")
+            return True, None
+        except PlaywrightTimeoutError:
+            logger.error("Estado desconhecido! Não é a tela de login, mas o menu não carregou. Possível erro de rede ou bloqueio.")
+            return False, ["Estado de sessão desconhecido"]
+
+
+def _extrair_com_tratamento_erros(page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc, arquivos_baixados, checklist):
+    """
+    Roda _extrair_relatorios_marca e categoriza o resultado — sucesso,
+    formato inválido, crash de navegador, ou erro inesperado.
+
+    Retorna (completo, faltantes, browser_morreu), sempre calculado a
+    partir do checklist real: mesmo quando uma exceção interrompe a
+    extração no meio, o checklist já reflete o que foi obtido até ali,
+    então o retorno reflete o estado verdadeiro, não um "tudo ou nada".
+    """
+    try:
+        _extrair_relatorios_marca(
+            page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+            arquivos_baixados, checklist
+        )
+        completo, faltantes = _avaliar_checklist(checklist)
+        return completo, faltantes, False
+
+    except FormatoInvalidoError as e:
+        # Arquivo chegou num formato inesperado — o checklist já reflete o que foi
+        # obtido até este ponto.
+        logger.error(
+            f"[MARCA INTERROMPIDA] {marca_arquivo.upper()}: formato inválido detectado "
+            f"na extração. Detalhes: {e}"
+        )
+        completo, faltantes = _avaliar_checklist(checklist)
+        return completo, faltantes, False
+
+    except Exception as e:
+        # TargetClosedError: o browser fechou — o objeto 'page' está morto, não tem
+        # como continuar nesta tentativa. browser_morreu=True só afeta o texto do log
+        # da próxima tentativa (extrair_dados_upgaming decide o retry de qualquer forma).
+        if "TargetClosedError" in type(e).__name__ or "Target page" in str(e):
+            logger.error(
+                f"[BROWSER FECHADO] {marca_arquivo.upper()}: o browser foi encerrado "
+                f"inesperadamente durante a extração desta marca."
+            )
+            completo, faltantes = _avaliar_checklist(checklist)
+            return completo, faltantes, True
+        else:
+            logger.exception(
+                f"[ERRO DE EXTRAÇÃO] {marca_arquivo.upper()}: erro inesperado durante "
+                f"a extração."
+            )
+            completo, faltantes = _avaliar_checklist(checklist)
+            return completo, faltantes, False
+
+
 def _extrair_uma_marca_uma_tentativa(marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc):
     """
     Uma tentativa completa de extração de UMA marca: abre um navegador
@@ -79,6 +207,12 @@ def _extrair_uma_marca_uma_tentativa(marca_arquivo, marca_bo, data_inicio, data_
     fecha tudo. Cada marca tem seu próprio orçamento de tentativas (ver
     extrair_dados_upgaming, logo abaixo) — uma marca com crash crônico
     nunca consome as tentativas de outra marca.
+
+    Orquestra 3 funções, cada uma com uma responsabilidade só:
+    _lancar_navegador_persistente (abre o browser), _confirmar_sessao
+    (login/cookie), _extrair_com_tratamento_erros (roda a extração e
+    categoriza o resultado). Nenhuma lógica de negócio mora aqui — só a
+    sequência de passos e o que fazer quando um deles falha.
 
     Retorna (arquivos_baixados, completo, faltantes, browser_morreu).
     completo/faltantes vêm direto de _avaliar_checklist(). browser_morreu
@@ -92,103 +226,32 @@ def _extrair_uma_marca_uma_tentativa(marca_arquivo, marca_bo, data_inicio, data_
 
     try:
         with sync_playwright() as p:
-            pasta_perfil = str(Path.cwd() / "perfil_robo_chrome")
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=pasta_perfil,
-                headless=False,
-                channel="chrome", 
-                chromium_sandbox=True, 
-                ignore_default_args=["--no-sandbox", "--enable-automation"],
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                viewport={'width': 1280, 'height': 720}
-            )
+            page = _lancar_navegador_persistente(p)
 
-            # Substitui a flag '--disable-blink-features=AutomationControlled' (que o
-            # Chrome sinaliza com o aviso "linha de comando não suportada") por um
-            # init_script equivalente: sobrescreve navigator.webdriver via JS, antes de
-            # qualquer página carregar. Mesmo efeito de disfarce, sem o aviso visível —
-            # e tecnicamente mais discreto, já que não depende de uma flag de linha de
-            # comando que sites de detecção anti-bot também podem checar.
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-            )
+            sessao_ok, motivo_falha = _confirmar_sessao(page)
+            if not sessao_ok:
+                return arquivos_baixados, False, motivo_falha, False
 
-            page = context.pages[0]
-            page.set_default_timeout(300000)
-
-            page.goto(URL_SISTEMA)
-
-            # Espera o redirecionamento acontecer (caso o cookie seja inválido)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=10000)
-                # Uma pequena pausa extra garante que a URL mude completamente
-                page.wait_for_timeout(1500)
-            except PlaywrightTimeoutError:
-                logger.debug("O carregamento inicial demorou mais que 10s. Seguindo para a avalição visual...")
-
-            # 1. VERIFICAÇÃO DA TELA DE LOGIN (URL + Visual da imagem corrigida)
-            is_login_url = "login.html" in page.url
-            is_login_visual = page.locator('text="Welcome To Admin Panel"').is_visible() or page.locator('input[name="username"]').is_visible()
-
-            # Se a URL acusou login OU a tela inicial apareceu, pede intervenção
-            if is_login_url or is_login_visual:
-                logger.warning("Página de login detectada (Sessão expirada).")
-                input("\n>>> Faça o login e resolva os reCAPTCHA, espere o painel inicial carregar e então pressione ENTER aqui...\n")
-
-                # 2. VALIDAÇÃO PÓS-LOGIN (Garante que a barra lateral apareceu)
-                try:
-                    page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
-                    logger.info("Login confirmado com sucesso!")
-                except PlaywrightTimeoutError:
-                    logger.error("Falha ao confirmar o login: Menu lateral não encontrado, abortando por segurança.")
-                    return arquivos_baixados, False, ["Falha ao confirmar login"], False
-            else:
-                # 3. PROVA REAL DO COOKIE (Garante que não é uma tela de erro 502/Cloudflare)
-                logger.info("Avaliando sessão salva no cookie...")
-                try:
-                    page.wait_for_selector(Seletores.Menu.REPORT, timeout=15000)
-                    logger.info("Sessão ativa confirmada! Menu carregado, pulando login manual...")
-                except PlaywrightTimeoutError:
-                    logger.error("Estado desconhecido! Não é a tela de login, mas o menu não carregou. Possível erro de rede ou bloqueio.")
-                    return arquivos_baixados, False, ["Estado de sessão desconhecido"], False
+            # =========================================================
+            # PAUSA DE ESTABILIZAÇÃO: padrão observado em produção mostra
+            # o TargetClosedError concentrado perto do primeiro download
+            # (NC), logo após um navegador recém-lançado — nunca depois
+            # que a sessão já processou algo. Como o retry agora é por
+            # marca (cada tentativa abre um navegador novo), essa janela
+            # de instabilidade pós-lançamento passou a se repetir a cada
+            # marca, não só uma vez por execução. Essa pausa é uma
+            # hipótese fundamentada nesse padrão, não uma certeza — o
+            # retry por marca continua como rede de segurança de
+            # qualquer forma.
+            # =========================================================
+            page.wait_for_timeout(3000)
 
             checklist = _novo_checklist()
-
-            try:
-                _extrair_relatorios_marca(
-                    page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
-                    arquivos_baixados, checklist
-                )
-            except FormatoInvalidoError as e:
-                # Arquivo chegou num formato inesperado — o checklist já reflete o que foi
-                # obtido até este ponto.
-                logger.error(
-                    f"[MARCA INTERROMPIDA] {marca_arquivo.upper()}: formato inválido detectado "
-                    f"na extração. Detalhes: {e}"
-                )
-                completo, faltantes = _avaliar_checklist(checklist)
-                return arquivos_baixados, completo, faltantes, False
-            except Exception as e:
-                # TargetClosedError: o browser fechou — o objeto 'page' está morto, não tem
-                # como continuar nesta tentativa. browser_morreu=True só afeta o texto do log
-                # da próxima tentativa (extrair_dados_upgaming decide o retry de qualquer forma).
-                if "TargetClosedError" in type(e).__name__ or "Target page" in str(e):
-                    logger.error(
-                        f"[BROWSER FECHADO] {marca_arquivo.upper()}: o browser foi encerrado "
-                        f"inesperadamente durante a extração desta marca."
-                    )
-                    completo, faltantes = _avaliar_checklist(checklist)
-                    return arquivos_baixados, completo, faltantes, True
-                else:
-                    logger.exception(
-                        f"[ERRO DE EXTRAÇÃO] {marca_arquivo.upper()}: erro inesperado durante "
-                        f"a extração."
-                    )
-                    completo, faltantes = _avaliar_checklist(checklist)
-                    return arquivos_baixados, completo, faltantes, False
-
-            completo, faltantes = _avaliar_checklist(checklist)
-            return arquivos_baixados, completo, faltantes, False
+            completo, faltantes, browser_morreu = _extrair_com_tratamento_erros(
+                page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+                arquivos_baixados, checklist
+            )
+            return arquivos_baixados, completo, faltantes, browser_morreu
 
     except Exception:
         logger.exception(f"FALHA CRÍTICA NA EXTRAÇÃO DE {marca_arquivo.upper()}:")
@@ -386,19 +449,18 @@ def _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, 
         )
 
 
-def _baixar_ugs_diario(page, marca_arquivo, pasta_destino, arquivos_baixados, checklist):
-    """[4/6] UGS Diário (Buscador Dinâmico de Lacunas)."""
-    page.select_option(Seletores.Filtros.GAME_TYPE, value="")
-
-    # Variável ajustável: Quantos dias no passado o robô deve checar?
-    JANELA_DIAS = 7
-    dias_diarios_faltantes = []
+def _detectar_lacunas_ugs_diario(marca_arquivo, janela_dias=7):
+    """
+    Verifica os últimos `janela_dias` dias (sem contar hoje) e devolve
+    quais ainda não têm arquivo salvo em disco. Checagem pura de
+    sistema de arquivos — nenhuma interação com o navegador aqui, o que
+    a torna testável sem mockar 'page'.
+    """
+    dias_faltantes = []
     hoje_real = datetime.now(timezone.utc).astimezone()
 
-    logger.info(f"Checando lacunas de UGS Diário nos últimos {JANELA_DIAS} dias...")
-
     # Loop de trás para frente (ex: dia -7 até dia -1) para manter a ordem cronológica
-    for i in range(JANELA_DIAS, 0, -1):
+    for i in range(janela_dias, 0, -1):
         dia_checar = hoje_real - timedelta(days=i)
         pasta_ugs_checar = obter_pasta_ugs_diario(marca_arquivo, dia_checar.year, dia_checar.month)
         nome_dia_checar = dia_checar.strftime("%d-%m")
@@ -407,7 +469,19 @@ def _baixar_ugs_diario(page, marca_arquivo, pasta_destino, arquivos_baixados, ch
 
         # Se o arquivo não existe fisicamente na pasta, entra na lista de download
         if not arquivo_esperado.exists():
-            dias_diarios_faltantes.append(dia_checar)
+            dias_faltantes.append(dia_checar)
+
+    return dias_faltantes
+
+
+def _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist):
+    """[4/6] UGS Diário (Buscador Dinâmico de Lacunas)."""
+    page.select_option(Seletores.Filtros.GAME_TYPE, value="")
+
+    # Variável ajustável: Quantos dias no passado o robô deve checar?
+    JANELA_DIAS = 7
+    logger.info(f"Checando lacunas de UGS Diário nos últimos {JANELA_DIAS} dias...")
+    dias_diarios_faltantes = _detectar_lacunas_ugs_diario(marca_arquivo, JANELA_DIAS)
 
     if not dias_diarios_faltantes:
         logger.info(f" Nenhuma lacuna encontrada! Todos os UGS dos últimos {JANELA_DIAS} dias já estão na pasta.")
@@ -468,6 +542,96 @@ def _baixar_ftd(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_dest
     )
 
 
+def _extrair_dia_generalstats(page, data_loop, data_loop_fim, max_tentativas=2):
+    """
+    Tenta extrair o JSON de UM dia do General Statistics, com retry se o
+    dado vier suspeito (vazio, ou vertical sempre-ativa zerada) — só
+    aqui, com o navegador ainda autenticado, é possível tentar de novo.
+
+    Retorna (json_do_dia_ou_none, motivo_falha). motivo_falha só importa
+    quando o retorno é None — é o que o chamador loga.
+    """
+    json_do_dia_valido = None
+    motivo_falha = "falha na requisição"
+
+    # =========================================================
+    # AQUI ESTÁ O SEGREDO: Se um dia falhar, não aborta tudo!
+    # Além disso, um dia que "funciona" tecnicamente (sem timeout)
+    # mas vem com dado suspeito (vazio, ou verticais sempre-ativas
+    # zeradas) é tratado como falha e ganha 1 retry antes de
+    # desistir — só aqui, com o navegador ainda autenticado, é
+    # possível tentar o dia de novo.
+    # =========================================================
+    for tentativa in range(1, max_tentativas + 1):
+        try:
+            # TRUQUE ANTI-JS: Clicar, limpar e digitar pausadamente (SEU CÓDIGO ORIGINAL)
+            loc_from = page.locator(Seletores.Filtros.DATE_FROM)
+            loc_from.click()
+            loc_from.clear()
+            loc_from.press_sequentially(f"{data_loop} 00:00", delay=50)
+
+            loc_to = page.locator(Seletores.Filtros.DATE_TO)
+            loc_to.click()
+            loc_to.clear()
+            loc_to.press_sequentially(data_loop_fim, delay=50)
+
+            page.click(Seletores.Botoes.OK)
+
+            # OBRIGATÓRIO: Dar 1 segundo para o site "entender" a data antes do Search
+            page.wait_for_timeout(1000)
+
+            # Escuta a aba "Network" e intercepta a requisição assim que clicar em Search
+            # (EXATAMENTE COMO VOCÊ ESCREVEU)
+            with page.expect_response(lambda response: response.url and "api/Reporting/Get" in response.url and "GameType" in response.url, timeout=30000) as response_info:
+                page.click(Seletores.Botoes.SEARCH_ADD)
+
+            # Extrai o JSON direto da resposta e valida a confiabilidade
+            candidato = response_info.value.json()
+            confiavel, motivo_falha = dia_generalstats_e_confiavel(candidato)
+
+            if confiavel:
+                json_do_dia_valido = candidato
+                break
+
+            tentativas_restantes = max_tentativas - tentativa
+            logger.warning(
+                f"Dia {data_loop} (tentativa {tentativa}/{max_tentativas}): "
+                f"dado suspeito — {motivo_falha}. "
+                + ("Tentando novamente..." if tentativas_restantes > 0 else "Desistindo após retry.")
+            )
+            if tentativas_restantes > 0:
+                page.wait_for_timeout(1500)
+
+        except PlaywrightTimeoutError:
+            motivo_falha = "timeout — API demorou mais de 30s"
+            logger.warning(
+                f"Timeout no dia {data_loop} (tentativa {tentativa}/{max_tentativas})."
+            )
+        except Exception as e:
+            motivo_falha = f"erro inesperado: {e}"
+            logger.error(
+                f"Erro inesperado no dia {data_loop} (tentativa {tentativa}/{max_tentativas}): {e}"
+            )
+
+    return json_do_dia_valido, motivo_falha
+
+
+def _salvar_generalstats_mensal(dados_json_mensal, pasta_destino, marca_arquivo, dias_fechados, arquivos_baixados, checklist):
+    """
+    Salva o JSON consolidado do mês em disco e atualiza checklist e
+    arquivos_baixados. I/O puro — nenhuma interação com o navegador.
+    """
+    arq_gs = str(pasta_destino / f"GeneralStats - {marca_arquivo}.json")
+    with open(arq_gs, 'w', encoding='utf-8') as f:
+        json.dump(dados_json_mensal, f, ensure_ascii=False, indent=4)
+
+    arquivos_baixados.append(arq_gs)
+    checklist["GeneralStats_obtidos"] = len(dados_json_mensal)
+    logger.info(
+        f"Salvo (JSON API): {arq_gs} — {len(dados_json_mensal)}/{dias_fechados} dias obtidos."
+    )
+
+
 def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos_baixados, checklist):
     """[6/6] General Statistics (Scraping da API Invisível)."""
     logger.info("Extraindo General Statistics via API (JSON)...")
@@ -510,73 +674,12 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
             data_loop_fim = calcular_limite_seguro(datetime(ano_alvo, mes_alvo, dia)).strftime("%d-%m-%Y %H:%M")
             logger.info(f" -> Extraindo dados do dia {data_loop}...")
 
-            # =========================================================
-            # AQUI ESTÁ O SEGREDO: Se um dia falhar, não aborta tudo!
-            # Além disso, um dia que "funciona" tecnicamente (sem timeout)
-            # mas vem com dado suspeito (vazio, ou verticais sempre-ativas
-            # zeradas) é tratado como falha e ganha 1 retry antes de
-            # desistir — só aqui, com o navegador ainda autenticado, é
-            # possível tentar o dia de novo.
-            # =========================================================
-            MAX_TENTATIVAS_DIA = 2  # tentativa original + 1 retry se o dado vier suspeito
-            json_do_dia_valido = None
-            motivo_falha = "falha na requisição"
+            json_do_dia, motivo_falha = _extrair_dia_generalstats(page, data_loop, data_loop_fim)
 
-            for tentativa in range(1, MAX_TENTATIVAS_DIA + 1):
-                try:
-                    # TRUQUE ANTI-JS: Clicar, limpar e digitar pausadamente (SEU CÓDIGO ORIGINAL)
-                    loc_from = page.locator(Seletores.Filtros.DATE_FROM)
-                    loc_from.click()
-                    loc_from.clear()
-                    loc_from.press_sequentially(f"{data_loop} 00:00", delay=50)
-
-                    loc_to = page.locator(Seletores.Filtros.DATE_TO)
-                    loc_to.click()
-                    loc_to.clear()
-                    loc_to.press_sequentially(data_loop_fim, delay=50)
-
-                    page.click(Seletores.Botoes.OK)
-
-                    # OBRIGATÓRIO: Dar 1 segundo para o site "entender" a data antes do Search
-                    page.wait_for_timeout(1000)
-
-                    # Escuta a aba "Network" e intercepta a requisição assim que clicar em Search
-                    # (EXATAMENTE COMO VOCÊ ESCREVEU)
-                    with page.expect_response(lambda response: response.url and "api/Reporting/Get" in response.url and "GameType" in response.url, timeout=30000) as response_info:
-                        page.click(Seletores.Botoes.SEARCH_ADD)
-
-                    # Extrai o JSON direto da resposta e valida a confiabilidade
-                    candidato = response_info.value.json()
-                    confiavel, motivo_falha = dia_generalstats_e_confiavel(candidato)
-
-                    if confiavel:
-                        json_do_dia_valido = candidato
-                        break
-
-                    tentativas_restantes = MAX_TENTATIVAS_DIA - tentativa
-                    logger.warning(
-                        f"Dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA}): "
-                        f"dado suspeito — {motivo_falha}. "
-                        + ("Tentando novamente..." if tentativas_restantes > 0 else "Desistindo após retry.")
-                    )
-                    if tentativas_restantes > 0:
-                        page.wait_for_timeout(1500)
-
-                except PlaywrightTimeoutError:
-                    motivo_falha = "timeout — API demorou mais de 30s"
-                    logger.warning(
-                        f"Timeout no dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA})."
-                    )
-                except Exception as e:
-                    motivo_falha = f"erro inesperado: {e}"
-                    logger.error(
-                        f"Erro inesperado no dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA}): {e}"
-                    )
-
-            if json_do_dia_valido is not None:
+            if json_do_dia is not None:
                 dados_json_mensal.append({
                     "Dia": dia,
-                    "dados": json_do_dia_valido
+                    "dados": json_do_dia
                 })
             else:
                 logger.error(
@@ -587,16 +690,7 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
             # Espera um pouco antes de ir para o próximo dia para não derrubar a API
             page.wait_for_timeout(1000)
 
-    # Salva os dados no arquivo JSON na pasta do dia
-    arq_gs = str(pasta_destino / f"GeneralStats - {marca_arquivo}.json")
-    with open(arq_gs, 'w', encoding='utf-8') as f:
-        json.dump(dados_json_mensal, f, ensure_ascii=False, indent=4)
-
-    arquivos_baixados.append(arq_gs)
-    checklist["GeneralStats_obtidos"] = len(dados_json_mensal)
-    logger.info(
-        f"Salvo (JSON API): {arq_gs} — {len(dados_json_mensal)}/{dias_fechados} dias obtidos."
-    )
+    _salvar_generalstats_mensal(dados_json_mensal, pasta_destino, marca_arquivo, dias_fechados, arquivos_baixados, checklist)
 
 
 def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc, arquivos_baixados, checklist):
@@ -624,6 +718,6 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
     _baixar_nc(page, marca_arquivo, marca_bo, data_inicio, data_fim_nc, pasta_destino, arquivos_baixados, checklist)
     _baixar_transacoes(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
     _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
-    _baixar_ugs_diario(page, marca_arquivo, pasta_destino, arquivos_baixados, checklist)
+    _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist)
     _baixar_ftd(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
     _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos_baixados, checklist)
