@@ -23,6 +23,7 @@ from utils.file_utils import (
     obter_pasta_ugs_diario,
     validar_formato_xlsx,
 )
+from utils.generalstats_utils import dia_generalstats_e_confiavel
 
 logger = logging.getLogger(__name__)
 
@@ -447,41 +448,78 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
             
             # =========================================================
             # AQUI ESTÁ O SEGREDO: Se um dia falhar, não aborta tudo!
+            # Além disso, um dia que "funciona" tecnicamente (sem timeout)
+            # mas vem com dado suspeito (vazio, ou verticais sempre-ativas
+            # zeradas) é tratado como falha e ganha 1 retry antes de
+            # desistir — só aqui, com o navegador ainda autenticado, é
+            # possível tentar o dia de novo.
             # =========================================================
-            try:
-                # TRUQUE ANTI-JS: Clicar, limpar e digitar pausadamente (SEU CÓDIGO ORIGINAL)
-                loc_from = page.locator(Seletores.Filtros.DATE_FROM)
-                loc_from.click()
-                loc_from.clear()
-                loc_from.press_sequentially(f"{data_loop} 00:00", delay=50)
-                
-                loc_to = page.locator(Seletores.Filtros.DATE_TO)
-                loc_to.click()
-                loc_to.clear()
-                loc_to.press_sequentially(data_loop_fim, delay=50)
-                
-                page.click(Seletores.Botoes.OK)
-                
-                # OBRIGATÓRIO: Dar 1 segundo para o site "entender" a data antes do Search
-                page.wait_for_timeout(1000)
-                
-                # Escuta a aba "Network" e intercepta a requisição assim que clicar em Search
-                # (EXATAMENTE COMO VOCÊ ESCREVEU)
-                with page.expect_response(lambda response: response.url and "api/Reporting/Get" in response.url and "GameType" in response.url, timeout=30000) as response_info:
-                    page.click(Seletores.Botoes.SEARCH_ADD)
-                    
-                # Extrai o JSON direto da resposta e salva no array
-                json_do_dia = response_info.value.json()
+            MAX_TENTATIVAS_DIA = 2  # tentativa original + 1 retry se o dado vier suspeito
+            json_do_dia_valido = None
+            motivo_falha = "falha na requisição"
+
+            for tentativa in range(1, MAX_TENTATIVAS_DIA + 1):
+                try:
+                    # TRUQUE ANTI-JS: Clicar, limpar e digitar pausadamente (SEU CÓDIGO ORIGINAL)
+                    loc_from = page.locator(Seletores.Filtros.DATE_FROM)
+                    loc_from.click()
+                    loc_from.clear()
+                    loc_from.press_sequentially(f"{data_loop} 00:00", delay=50)
+
+                    loc_to = page.locator(Seletores.Filtros.DATE_TO)
+                    loc_to.click()
+                    loc_to.clear()
+                    loc_to.press_sequentially(data_loop_fim, delay=50)
+
+                    page.click(Seletores.Botoes.OK)
+
+                    # OBRIGATÓRIO: Dar 1 segundo para o site "entender" a data antes do Search
+                    page.wait_for_timeout(1000)
+
+                    # Escuta a aba "Network" e intercepta a requisição assim que clicar em Search
+                    # (EXATAMENTE COMO VOCÊ ESCREVEU)
+                    with page.expect_response(lambda response: response.url and "api/Reporting/Get" in response.url and "GameType" in response.url, timeout=30000) as response_info:
+                        page.click(Seletores.Botoes.SEARCH_ADD)
+
+                    # Extrai o JSON direto da resposta e valida a confiabilidade
+                    candidato = response_info.value.json()
+                    confiavel, motivo_falha = dia_generalstats_e_confiavel(candidato)
+
+                    if confiavel:
+                        json_do_dia_valido = candidato
+                        break
+
+                    tentativas_restantes = MAX_TENTATIVAS_DIA - tentativa
+                    logger.warning(
+                        f"Dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA}): "
+                        f"dado suspeito — {motivo_falha}. "
+                        + ("Tentando novamente..." if tentativas_restantes > 0 else "Desistindo após retry.")
+                    )
+                    if tentativas_restantes > 0:
+                        page.wait_for_timeout(1500)
+
+                except PlaywrightTimeoutError:
+                    motivo_falha = "timeout — API demorou mais de 30s"
+                    logger.warning(
+                        f"Timeout no dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA})."
+                    )
+                except Exception as e:
+                    motivo_falha = f"erro inesperado: {e}"
+                    logger.error(
+                        f"Erro inesperado no dia {data_loop} (tentativa {tentativa}/{MAX_TENTATIVAS_DIA}): {e}"
+                    )
+
+            if json_do_dia_valido is not None:
                 dados_json_mensal.append({
                     "Dia": dia,
-                    "dados": json_do_dia
+                    "dados": json_do_dia_valido
                 })
-                
-            except PlaywrightTimeoutError:
-                logger.warning(f"Timeout no dia {data_loop}: A API demorou mais de 30s. Ignorando o dia e avançando...")
-            except Exception as e:
-                logger.error(f"Erro inesperado no dia {data_loop}: {e}")
-            
+            else:
+                logger.error(
+                    f"Dia {data_loop}: dado não confiável mesmo após retry ({motivo_falha}). "
+                    f"Este dia NÃO será contado como obtido."
+                )
+
             # Espera um pouco antes de ir para o próximo dia para não derrubar a API
             page.wait_for_timeout(1000)
             

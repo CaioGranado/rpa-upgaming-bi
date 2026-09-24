@@ -44,8 +44,6 @@ class LogDivisors:
 
 # ------------ SELETORES CSS - Agrupados por Contexto ------------
 class Seletores:
-    """Organização hierárquica dos seletores do Playwright."""
-
     class Menu:
         USERS: Final[str] = 'span[text_key="SIDEBAR__USERS"]:visible'
         TRANSACTIONS: Final[str] = 'span[text_key="SIDEBAR__SYSTEM_TRANSACTIONS"]:visible'

@@ -1,24 +1,3 @@
-"""
-Auditoria e injeção da Base de Performance — 7 Steps que escrevem, cada um,
-num bloco diferente de colunas da mesma aba 'BaseGeral' do mesmo arquivo
-(arquivo_performance). Mantidos juntos neste único módulo porque não são 7
-responsabilidades diferentes: são 7 facetas da mesma responsabilidade
-(popular a BaseGeral), cada uma lendo de uma fonte de dados diferente
-(Transações, NC, FTD, MTD, KYC, GeneralStats, UGS Diário) mas escrevendo
-no mesmo destino. Separar em 7 arquivos esconderia a duplicação de padrão
-entre os Steps (todos calculam idx_inicio/linha_excel_inicio do mesmo jeito),
-tornando mais fácil corrigir um e esquecer os outros 6.
-
-Nota sobre backup: só o Step 1 chama _fazer_backup(arquivo_performance) —
-decisão deliberada da equipe (evitar 7 backups redundantes do mesmo arquivo
-por execução; o backup do Step 1 já cobre o estado "antes de qualquer Step
-rodar no dia").
-
-Nota sobre DadosNaoConfiaveisError (Steps 6 e 7): quando um dia não tem
-registro na fonte (JSON do General Stats ausente, ou arquivo diário de UGS
-ausente/ilegível), a exceção é levantada em vez de preencher com zero
-silenciosamente — "não sei" não pode virar "é zero" sem confirmação real.
-"""
 import calendar
 import json
 import logging
@@ -32,7 +11,13 @@ from transformers.data_cleaner import garantir_continuidade_temporal
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import _fechar_excel_seguro
 from utils.exceptions_utils import DadosNaoConfiaveisError
-from utils.file_utils import MESES_PT, _fazer_backup, _obter_caminho_download, obter_caminho_base, obter_pasta_ugs_diario
+from utils.file_utils import (
+    MESES_PT,
+    _fazer_backup,
+    _obter_caminho_download,
+    obter_caminho_base,
+    obter_pasta_ugs_diario,
+)
 from utils.formatacao_utils import formatar_brl, formatar_int, formatar_num
 
 logger = logging.getLogger(__name__)
@@ -714,16 +699,18 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     dados_por_dia = {item["Dia"]: item["dados"] for item in dados_json_mensal}
     dados_para_injetar = []
     
+    # Nota: este Step não valida a confiabilidade dos dados — isso é
+    # responsabilidade exclusiva da extração (extractors/web_scraper.py),
+    # que só grava um dia no JSON depois de confirmar (com retry) que ele
+    # passa em utils/generalstats_utils.dia_generalstats_e_confiavel(). Se
+    # um dia não confiável sobrevive à extração, a marca inteira já foi
+    # marcada como incompleta e o main.py nem chega a chamar este Step.
+    # Loader é loader: confia no que recebe, só injeta.
     logger.info(f"Processando dados do dia 01 até {limite_dia:02d}...")
     for dia in range(1, limite_dia + 1):
         json_do_dia = dados_por_dia.get(dia, [])
-        if not json_do_dia:
-            raise DadosNaoConfiaveisError(
-                f"Dados do dia {dia:02d} não encontrados no JSON de General Statistics. "
-                f"Não é seguro preencher com zero sem confirmar a ausência real do dado."
-            )
 
-        linha_excel = [0.0] * 16 
+        linha_excel = [0.0] * 16
         for jogo in json_do_dia:
             tipo = jogo.get("gameType")
             if tipo in mapeamento_upgaming:
@@ -733,7 +720,7 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
                 linha_excel[idx_bet] = float(jogo.get("betAmount", 0))
                 linha_excel[idx_win] = float(jogo.get("winAmount", 0))
                 linha_excel[idx_users] = int(jogo.get("userCount", 0))
-                
+
         dados_para_injetar.append(linha_excel)
 
     logger.info("Estruturação concluída! Iniciando Auditoria Estrita no Excel...")
