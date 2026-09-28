@@ -38,7 +38,7 @@ _ROTULOS_FIXOS_ESPERADOS = [
 
 def _novo_checklist() -> dict:
     """Cria um checklist zerado para o início da extração de uma marca."""
-    checklist = dict.fromkeys(_ROTULOS_FIXOS_ESPERADOS, False)
+    checklist = {rotulo: False for rotulo in _ROTULOS_FIXOS_ESPERADOS}
     checklist["UGS_Diario_esperados"] = 0
     checklist["UGS_Diario_obtidos"] = 0
     # GeneralStats tem loop interno por dia que tolera falha de dias individuais
@@ -200,62 +200,91 @@ def _extrair_com_tratamento_erros(page, marca_arquivo, marca_bo, data_inicio, da
             return completo, faltantes, False
 
 
-def _extrair_uma_marca_uma_tentativa(marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc):
+def _fechar_navegador_com_seguranca(page):
     """
-    Uma tentativa completa de extração de UMA marca: abre um navegador
-    novo, confirma login/sessão, extrai os relatórios dessa marca, e
-    fecha tudo. Cada marca tem seu próprio orçamento de tentativas (ver
+    Fecha o contexto do navegador de forma defensiva — usado sempre que
+    vamos abandonar um 'page' (crashou ou a sessão falhou), para
+    garantir que a pasta de perfil (user_data_dir) seja liberada antes
+    da próxima tentativa tentar abrir um navegador novo no mesmo
+    perfil. Se o navegador já morreu sozinho (TargetClosedError),
+    fechar de novo pode falhar — isso é esperado e é só ignorado.
+    """
+    try:
+        page.context.close()
+    except Exception:
+        pass
+
+
+def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc):
+    """
+    Uma tentativa de extração de UMA marca.
+
+    Se `page` vier None, abre um navegador novo e confirma a sessão
+    antes de extrair — isso acontece na primeira tentativa da primeira
+    marca, e sempre que a tentativa anterior (desta marca ou da
+    anterior) crashou. Se `page` já vier de uma marca/tentativa
+    anterior que terminou saudável, pula direto para a extração — sem
+    gastar tempo reabrindo o Chrome nem re-confirmando login à toa.
+
+    Retorna (page, arquivos_baixados, completo, faltantes,
+    browser_morreu). O `page` retornado é a mesma instância recebida
+    (se ainda viva) ou None (se crashou, ou se nunca chegou a abrir) —
+    o chamador (extrair_dados_upgaming) usa isso para decidir se
+    relança o navegador na próxima tentativa, seja dela mesma ou da
+    marca seguinte.
+
+    Cada marca tem seu próprio orçamento de tentativas (ver
     extrair_dados_upgaming, logo abaixo) — uma marca com crash crônico
-    nunca consome as tentativas de outra marca.
-
-    Orquestra 3 funções, cada uma com uma responsabilidade só:
-    _lancar_navegador_persistente (abre o browser), _confirmar_sessao
-    (login/cookie), _extrair_com_tratamento_erros (roda a extração e
-    categoriza o resultado). Nenhuma lógica de negócio mora aqui — só a
-    sequência de passos e o que fazer quando um deles falha.
-
-    Retorna (arquivos_baixados, completo, faltantes, browser_morreu).
-    completo/faltantes vêm direto de _avaliar_checklist(). browser_morreu
-    sinaliza que a falha foi especificamente um crash de navegador
-    (TargetClosedError) — informação usada só para a mensagem de log da
-    tentativa seguinte, não muda a lógica de retry em si (qualquer
-    motivo de incompletude gera nova tentativa, dentro do orçamento).
+    nunca consome as tentativas de outra marca. Isso é independente de
+    reaproveitar ou não o navegador: o orçamento é sobre contagem de
+    tentativas, o reaproveitamento é só sobre evitar reabrir o Chrome
+    à toa quando ele está saudável.
     """
-    logger.info("Iniciando módulo de Extração Web...")
     arquivos_baixados = []
 
-    try:
-        with sync_playwright() as p:
+    if page is None:
+        logger.info("Iniciando módulo de Extração Web...")
+        try:
             page = _lancar_navegador_persistente(p)
+        except Exception:
+            logger.exception(f"FALHA CRÍTICA AO ABRIR NAVEGADOR PARA {marca_arquivo.upper()}:")
+            return None, arquivos_baixados, False, ["Falha crítica ao abrir o navegador"], True
 
-            sessao_ok, motivo_falha = _confirmar_sessao(page)
-            if not sessao_ok:
-                return arquivos_baixados, False, motivo_falha, False
+        sessao_ok, motivo_falha = _confirmar_sessao(page)
+        if not sessao_ok:
+            _fechar_navegador_com_seguranca(page)
+            return None, arquivos_baixados, False, motivo_falha, False
 
-            # =========================================================
-            # PAUSA DE ESTABILIZAÇÃO: padrão observado em produção mostra
-            # o TargetClosedError concentrado perto do primeiro download
-            # (NC), logo após um navegador recém-lançado — nunca depois
-            # que a sessão já processou algo. Como o retry agora é por
-            # marca (cada tentativa abre um navegador novo), essa janela
-            # de instabilidade pós-lançamento passou a se repetir a cada
-            # marca, não só uma vez por execução. Essa pausa é uma
-            # hipótese fundamentada nesse padrão, não uma certeza — o
-            # retry por marca continua como rede de segurança de
-            # qualquer forma.
-            # =========================================================
-            page.wait_for_timeout(3000)
+        # =========================================================
+        # PAUSA DE ESTABILIZAÇÃO: padrão observado em produção mostra
+        # o TargetClosedError concentrado perto do primeiro download
+        # (NC), logo após um navegador recém-lançado — nunca depois
+        # que a sessão já processou algo. Só faz sentido logo após
+        # ABRIR um navegador novo — um 'page' reaproveitado de uma
+        # marca anterior saudável não precisa dessa pausa de novo.
+        # =========================================================
+        page.wait_for_timeout(3000)
+    else:
+        logger.info(f"Reaproveitando navegador já aberto para {marca_arquivo.upper()}.")
 
-            checklist = _novo_checklist()
-            completo, faltantes, browser_morreu = _extrair_com_tratamento_erros(
-                page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
-                arquivos_baixados, checklist
-            )
-            return arquivos_baixados, completo, faltantes, browser_morreu
-
+    checklist = _novo_checklist()
+    try:
+        completo, faltantes, browser_morreu = _extrair_com_tratamento_erros(
+            page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+            arquivos_baixados, checklist
+        )
     except Exception:
         logger.exception(f"FALHA CRÍTICA NA EXTRAÇÃO DE {marca_arquivo.upper()}:")
-        return arquivos_baixados, False, ["Falha crítica antes de iniciar a extração"], True
+        _fechar_navegador_com_seguranca(page)
+        return None, arquivos_baixados, False, ["Falha crítica durante a extração"], True
+
+    if browser_morreu:
+        _fechar_navegador_com_seguranca(page)
+        return None, arquivos_baixados, completo, faltantes, browser_morreu
+
+    # Navegador segue saudável — devolvido para a próxima tentativa (desta
+    # marca, se incompleta por outro motivo, ou da marca seguinte) reaproveitar.
+    return page, arquivos_baixados, completo, faltantes, browser_morreu
 
 
 def extrair_dados_upgaming():
@@ -266,14 +295,20 @@ def extrair_dados_upgaming():
     Cada marca recebe seu PRÓPRIO orçamento de MAX_TENTATIVAS_POR_MARCA
     tentativas, totalmente independente das demais — uma marca com crash
     crônico (ex: sempre falha logo no primeiro download) nunca consome
-    as tentativas de outra marca. Diferente do desenho anterior (retry
-    de sessão inteira compartilhado entre marcas), aqui não existe mais
-    risco de uma marca "azarada" consumir o orçamento e deixar as
-    seguintes sem nenhuma tentativa real.
+    as tentativas de outra marca. Uma marca que complete plenamente (em
+    qualquer tentativa, a 1ª ou a última) segue normalmente para as
+    Etapas 2 e 3. Só as marcas que esgotarem seu próprio orçamento sem
+    completar ficam de fora.
 
-    Uma marca que complete plenamente (em qualquer tentativa, a 1ª ou a
-    última) segue normalmente para as Etapas 2 e 3. Só as marcas que
-    esgotarem seu próprio orçamento sem completar ficam de fora.
+    O navegador é reaproveitado entre marcas e tentativas ENQUANTO
+    estiver saudável — só é relançado quando de fato crasha (ou quando
+    a confirmação de sessão falha). Isso evita pagar o "preço" de abrir
+    um Chrome novo (e a instabilidade que isso historicamente trouxe
+    logo no primeiro download) toda vez que a marca muda, mesmo quando
+    tudo está indo bem. `page` é a variável que carrega esse estado
+    entre as iterações do loop: None significa "preciso abrir um novo
+    na próxima tentativa", qualquer outro valor significa "este aqui
+    ainda está de pé, reaproveite".
     """
     logger.info("Iniciando módulo de Extração Web...")
     logger.info("Avaliando o período de extração...")
@@ -285,43 +320,46 @@ def extrair_dados_upgaming():
     arquivos_baixados_total = []
     marcas_incompletas_final = {}
 
-    for marca_arquivo, marca_bo in MARCAS_CONFIG.items():
-        logger.info(LogDivisors.SUB)
-        logger.info(f" >>> INICIANDO EXTRAÇÃO PARA A MARCA: {marca_arquivo.upper()} <<<")
-        logger.info(LogDivisors.SUB)
+    with sync_playwright() as p:
+        page = None  # nenhum navegador aberto ainda — a primeira tentativa da primeira marca abre um
 
-        sucesso = False
-        ultimo_faltantes = ["motivo desconhecido"]
+        for marca_arquivo, marca_bo in MARCAS_CONFIG.items():
+            logger.info(LogDivisors.SUB)
+            logger.info(f" >>> INICIANDO EXTRAÇÃO PARA A MARCA: {marca_arquivo.upper()} <<<")
+            logger.info(LogDivisors.SUB)
 
-        for tentativa in range(1, MAX_TENTATIVAS_POR_MARCA + 1):
-            arquivos, completo, faltantes, browser_morreu = _extrair_uma_marca_uma_tentativa(
-                marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc
-            )
+            sucesso = False
+            ultimo_faltantes = ["motivo desconhecido"]
 
-            if completo:
-                arquivos_baixados_total.extend(arquivos)
-                logger.info(f"[MARCA COMPLETA] {marca_arquivo.upper()}: todos os arquivos esperados foram obtidos.")
-                sucesso = True
-                break
-
-            ultimo_faltantes = faltantes
-            tentativas_restantes = MAX_TENTATIVAS_POR_MARCA - tentativa
-
-            if tentativas_restantes > 0:
-                espera = ESPERAS_ENTRE_TENTATIVAS[min(tentativa - 1, len(ESPERAS_ENTRE_TENTATIVAS) - 1)]
-                motivo_retry = "crash de navegador" if browser_morreu else f"faltando {faltantes}"
-                logger.warning(
-                    f"[MARCA REINICIADA] {marca_arquivo.upper()}: tentativa {tentativa}/{MAX_TENTATIVAS_POR_MARCA} "
-                    f"incompleta ({motivo_retry}). Aguardando {espera}s e tentando novamente..."
+            for tentativa in range(1, MAX_TENTATIVAS_POR_MARCA + 1):
+                page, arquivos, completo, faltantes, browser_morreu = _extrair_uma_marca_uma_tentativa(
+                    p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc
                 )
-                time.sleep(espera)
 
-        if not sucesso:
-            marcas_incompletas_final[marca_arquivo] = ultimo_faltantes
-            logger.error(
-                f"[MARCA FALHOU] {marca_arquivo.upper()}: esgotou as {MAX_TENTATIVAS_POR_MARCA} tentativas "
-                f"(faltando: {ultimo_faltantes}). Esta marca será pulada nas Etapas 2 e 3."
-            )
+                if completo:
+                    arquivos_baixados_total.extend(arquivos)
+                    logger.info(f"[MARCA COMPLETA] {marca_arquivo.upper()}: todos os arquivos esperados foram obtidos.")
+                    sucesso = True
+                    break
+
+                ultimo_faltantes = faltantes
+                tentativas_restantes = MAX_TENTATIVAS_POR_MARCA - tentativa
+
+                if tentativas_restantes > 0:
+                    espera = ESPERAS_ENTRE_TENTATIVAS[min(tentativa - 1, len(ESPERAS_ENTRE_TENTATIVAS) - 1)]
+                    motivo_retry = "crash de navegador" if browser_morreu else f"faltando {faltantes}"
+                    logger.warning(
+                        f"[MARCA REINICIADA] {marca_arquivo.upper()}: tentativa {tentativa}/{MAX_TENTATIVAS_POR_MARCA} "
+                        f"incompleta ({motivo_retry}). Aguardando {espera}s e tentando novamente..."
+                    )
+                    time.sleep(espera)
+
+            if not sucesso:
+                marcas_incompletas_final[marca_arquivo] = ultimo_faltantes
+                logger.error(
+                    f"[MARCA FALHOU] {marca_arquivo.upper()}: esgotou as {MAX_TENTATIVAS_POR_MARCA} tentativas "
+                    f"(faltando: {ultimo_faltantes}). Esta marca será pulada nas Etapas 2 e 3."
+                )
 
     return arquivos_baixados_total, marcas_incompletas_final
 
