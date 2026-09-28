@@ -1,3 +1,30 @@
+"""
+Auditoria e injeção da Base de Performance — 7 Steps que escrevem, cada um,
+num bloco diferente de colunas da mesma aba 'BaseGeral' do mesmo arquivo
+(arquivo_performance). Mantidos juntos neste único módulo porque não são 7
+responsabilidades diferentes: são 7 facetas da mesma responsabilidade
+(popular a BaseGeral), cada uma lendo de uma fonte de dados diferente
+(Transações, NC, FTD, MTD, KYC, GeneralStats, UGS Diário) mas escrevendo
+no mesmo destino. Separar em 7 arquivos esconderia a duplicação de padrão
+entre os Steps (todos calculam idx_inicio/linha_excel_inicio do mesmo jeito),
+tornando mais fácil corrigir um e esquecer os outros 6.
+
+Nota sobre backup: só o Step 1 chama _fazer_backup(arquivo_performance) —
+decisão deliberada da equipe (evitar 7 backups redundantes do mesmo arquivo
+por execução; o backup do Step 1 já cobre o estado "antes de qualquer Step
+rodar no dia").
+
+Nota sobre DadosNaoConfiaveisError (Step 7): quando um dia não tem
+registro na fonte (arquivo diário de UGS ausente/ilegível), a exceção é
+levantada em vez de preencher com zero silenciosamente — "não sei" não
+pode virar "é zero" sem confirmação real. O Step 6 (General Stats) não
+valida mais nada aqui — a confiabilidade dos dados é responsabilidade
+exclusiva da extração (extractors/web_scraper.py), que já garante, via
+retry e utils/generalstats_utils.dia_generalstats_e_confiavel(), que só
+dados confiáveis chegam a ser salvos no JSON. Um dia não confiável que
+sobrevive à extração marca a marca inteira como incompleta, e o main.py
+nem chega a chamar este Step 6 para ela.
+"""
 import calendar
 import json
 import logging
@@ -29,8 +56,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_transacoes.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance não encontrados.")
 
     logger.info("Lendo Tabela Dinâmica 'Din_Diario' no arquivo de Transações...")
     df_din = pd.read_excel(arquivo_transacoes, sheet_name="Din_Diario", header=None)
@@ -172,6 +198,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao gravar a Base Performance:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step2(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 2 - NC) ({marca}) ===")
@@ -179,8 +206,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_nc.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance (Step 2) não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 2) não encontrados.")
 
     logger.info("Lendo Tabelas Dinâmicas 'Din_Diario' no arquivo de Novas Contas...")
     df_din_full = pd.read_excel(arquivo_nc, sheet_name="Din_Diario", header=None)
@@ -216,8 +242,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
     
     if df_mesclado.empty:
-        logger.error("Nenhum dia válido encontrado nas tabelas dinâmicas até o dia anterior.")
-        return
+        raise DadosNaoConfiaveisError("Nenhum dia válido encontrado nas tabelas dinâmicas até o dia anterior.")
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
@@ -289,6 +314,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao gravar a Base Performance:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step3(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 3 - FTD) ({marca}) ===")
@@ -296,8 +322,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_ftd.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance (Step 3) não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 3) não encontrados.")
 
     def extrair_dinamica_bloco(df_source, col_idx_dia, col_idx_valores, col_names):
         mask = df_source.iloc[:, col_idx_dia].astype(str).str.contains('Rótulos de Linha', case=False)
@@ -340,8 +365,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
 
     if df_mesclado.empty:
-        logger.error("Nenhum dia válido encontrado no FTD até o dia anterior.")
-        return
+        raise DadosNaoConfiaveisError("Nenhum dia válido encontrado no FTD até o dia anterior.")
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
@@ -423,6 +447,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao gravar a Base Performance:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step4(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 4 - MTD) ({marca}) ===")
@@ -430,8 +455,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_mtd.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance (Step 4) não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 4) não encontrados.")
 
     logger.info("Lendo aba 'Din' no arquivo MTD (Colunas I a O)...")
     df_mtd = pd.read_excel(arquivo_mtd, sheet_name="Din", header=4, usecols="I:O")
@@ -451,8 +475,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     df_mtd = df_mtd.sort_values('Dia').reset_index(drop=True)
 
     if df_mtd.empty:
-        logger.error("Nenhum dia válido encontrado no MTD após aplicar o filtro de data.")
-        return
+        raise DadosNaoConfiaveisError("Nenhum dia válido encontrado no MTD após aplicar o filtro de data.")
         
     df_mtd = garantir_continuidade_temporal(df_mtd, limite_dia)
 
@@ -527,6 +550,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao gravar a Base Performance:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step5(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 5 - KYC) ({marca}) ===")
@@ -534,8 +558,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_kyc.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance (Step 5) não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 5) não encontrados.")
 
     logger.info("Lendo aba 'DIN' no arquivo KYC...")
     df_din_full = pd.read_excel(arquivo_kyc, sheet_name="DIN", header=None)
@@ -578,8 +601,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     df_mesclado = df_mesclado[(df_mesclado['Dia'] > 0) & (df_mesclado['Dia'] <= limite_dia)].copy()
 
     if df_mesclado.empty:
-        logger.error("Nenhum dia válido encontrado no KYC após aplicar o filtro de data.")
-        return
+        raise DadosNaoConfiaveisError("Nenhum dia válido encontrado no KYC após aplicar o filtro de data.")
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
@@ -672,6 +694,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico ao gravar a Base Performance:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step6(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 6 - GEN STATS) ({marca}) ===")
@@ -679,8 +702,7 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_json or not arquivo_json.exists() or not arquivo_performance.exists():
-        logger.error("Arquivos necessários para a Base Performance (Step 6) não encontrados.")
-        return
+        raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 6) não encontrados.")
 
     mapeamento_upgaming = {
         "Sportsbook": {"bet": 0, "win": 1, "users": 12},  
@@ -785,14 +807,14 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico na gravação do Step 6:")
         _fechar_excel_seguro(wb, excel)
+        raise
 
 def carregar_base_performance_step7(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 7 - USUÁRIOS ÚNICOS) ({marca}) ===")
     arquivo_performance = obter_caminho_base(marca, "Performance", obter_data_alvo())
 
     if not arquivo_performance.exists():
-        logger.error("Base Performance não encontrada para o Step 7.")
-        return
+        raise DadosNaoConfiaveisError("Base Performance não encontrada para o Step 7.")
 
     data_alvo = obter_data_alvo()
     limite_dia = data_alvo.day
@@ -858,3 +880,4 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
     except Exception:
         logger.exception("Erro crítico na gravação do Step 7:")
         _fechar_excel_seguro(wb, excel)
+        raise
