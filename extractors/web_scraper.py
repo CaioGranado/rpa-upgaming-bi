@@ -4,10 +4,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import openpyxl
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from config.settings import (
+    ACEITAR_DIAS_ZERADOS,
     MARCAS_CONFIG,
     URL_SISTEMA,
     LogDivisors,
@@ -20,6 +22,7 @@ from utils.date_utils import (
 )
 from utils.exceptions_utils import FormatoInvalidoError
 from utils.file_utils import (
+    _detectar_formato_real,
     obter_pasta_download_diario,
     obter_pasta_ugs_diario,
     validar_formato_xlsx,
@@ -37,8 +40,17 @@ _ROTULOS_FIXOS_ESPERADOS = [
 
 
 def _novo_checklist() -> dict:
-    """Cria um checklist zerado para o início da extração de uma marca."""
-    checklist = {rotulo: False for rotulo in _ROTULOS_FIXOS_ESPERADOS}
+    """
+    Cria o checklist de progresso de uma marca.
+
+    Um checklist pertence à MARCA, não à tentativa: o mesmo objeto acompanha
+    todas as tentativas, e cada relatório concluído fica marcado para ser
+    pulado na tentativa seguinte (retomada), em vez de baixado de novo. Por
+    isso ele também guarda os dados já obtidos do General Statistics, dia a
+    dia (GeneralStats_dias), para que só os dias que faltam sejam pedidos de
+    novo.
+    """
+    checklist = dict.fromkeys(_ROTULOS_FIXOS_ESPERADOS, False)
     checklist["UGS_Diario_esperados"] = 0
     checklist["UGS_Diario_obtidos"] = 0
     # GeneralStats tem loop interno por dia que tolera falha de dias individuais
@@ -48,6 +60,11 @@ def _novo_checklist() -> dict:
     # metade dos dias).
     checklist["GeneralStats_esperados"] = 0
     checklist["GeneralStats_obtidos"] = 0
+    checklist["GeneralStats_dias"] = {}  # {numero_do_dia: json_do_dia} já obtidos
+    # Só usados com ACEITAR_DIAS_ZERADOS (ver settings): quantas vezes cada UGS Diário
+    # veio quebrado, e quais dias acabaram aceitos como zerados (para o resumo no log).
+    checklist["UGS_Diario_falhas"] = {}
+    checklist["Dias_zerados_aceitos"] = []
     return checklist
 
 
@@ -215,9 +232,17 @@ def _fechar_navegador_com_seguranca(page):
         pass
 
 
-def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc):
+def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+                                     arquivos_baixados, checklist):
     """
     Uma tentativa de extração de UMA marca.
+
+    `arquivos_baixados` e `checklist` pertencem à MARCA, não à tentativa:
+    são criados por extrair_dados_upgaming e chegam aqui já com o progresso
+    das tentativas anteriores. Os relatórios que já constam como obtidos são
+    pulados — a tentativa só refaz o que ainda falta. Os dois objetos são
+    alterados no próprio lugar, então o chamador enxerga o progresso mesmo
+    quando a tentativa termina em exceção.
 
     Se `page` vier None, abre um navegador novo e confirma a sessão
     antes de extrair — isso acontece na primeira tentativa da primeira
@@ -226,12 +251,11 @@ def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inic
     anterior que terminou saudável, pula direto para a extração — sem
     gastar tempo reabrindo o Chrome nem re-confirmando login à toa.
 
-    Retorna (page, arquivos_baixados, completo, faltantes,
-    browser_morreu). O `page` retornado é a mesma instância recebida
-    (se ainda viva) ou None (se crashou, ou se nunca chegou a abrir) —
-    o chamador (extrair_dados_upgaming) usa isso para decidir se
-    relança o navegador na próxima tentativa, seja dela mesma ou da
-    marca seguinte.
+    Retorna (page, completo, faltantes, browser_morreu). O `page`
+    retornado é a mesma instância recebida (se ainda viva) ou None (se
+    crashou, ou se nunca chegou a abrir) — o chamador
+    (extrair_dados_upgaming) usa isso para decidir se relança o
+    navegador na próxima tentativa, seja dela mesma ou da marca seguinte.
 
     Cada marca tem seu próprio orçamento de tentativas (ver
     extrair_dados_upgaming, logo abaixo) — uma marca com crash crônico
@@ -240,20 +264,18 @@ def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inic
     tentativas, o reaproveitamento é só sobre evitar reabrir o Chrome
     à toa quando ele está saudável.
     """
-    arquivos_baixados = []
-
     if page is None:
         logger.info("Iniciando módulo de Extração Web...")
         try:
             page = _lancar_navegador_persistente(p)
         except Exception:
             logger.exception(f"FALHA CRÍTICA AO ABRIR NAVEGADOR PARA {marca_arquivo.upper()}:")
-            return None, arquivos_baixados, False, ["Falha crítica ao abrir o navegador"], True
+            return None, False, ["Falha crítica ao abrir o navegador"], True
 
         sessao_ok, motivo_falha = _confirmar_sessao(page)
         if not sessao_ok:
             _fechar_navegador_com_seguranca(page)
-            return None, arquivos_baixados, False, motivo_falha, False
+            return None, False, motivo_falha, False
 
         # =========================================================
         # PAUSA DE ESTABILIZAÇÃO: padrão observado em produção mostra
@@ -267,7 +289,6 @@ def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inic
     else:
         logger.info(f"Reaproveitando navegador já aberto para {marca_arquivo.upper()}.")
 
-    checklist = _novo_checklist()
     try:
         completo, faltantes, browser_morreu = _extrair_com_tratamento_erros(
             page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
@@ -276,15 +297,15 @@ def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inic
     except Exception:
         logger.exception(f"FALHA CRÍTICA NA EXTRAÇÃO DE {marca_arquivo.upper()}:")
         _fechar_navegador_com_seguranca(page)
-        return None, arquivos_baixados, False, ["Falha crítica durante a extração"], True
+        return None, False, ["Falha crítica durante a extração"], True
 
     if browser_morreu:
         _fechar_navegador_com_seguranca(page)
-        return None, arquivos_baixados, completo, faltantes, browser_morreu
+        return None, completo, faltantes, browser_morreu
 
     # Navegador segue saudável — devolvido para a próxima tentativa (desta
     # marca, se incompleta por outro motivo, ou da marca seguinte) reaproveitar.
-    return page, arquivos_baixados, completo, faltantes, browser_morreu
+    return page, completo, faltantes, browser_morreu
 
 
 def extrair_dados_upgaming():
@@ -300,6 +321,13 @@ def extrair_dados_upgaming():
     Etapas 2 e 3. Só as marcas que esgotarem seu próprio orçamento sem
     completar ficam de fora.
 
+    Cada nova tentativa RETOMA a marca: o progresso (lista de arquivos e
+    checklist) é criado uma vez por marca e atravessa as tentativas, então
+    um relatório já obtido não é baixado de novo — se o UGS Diário falha,
+    a próxima tentativa refaz só o UGS Diário (e o que vier depois), não a
+    marca inteira. Os arquivos só seguem para as Etapas 2 e 3 quando a
+    marca fica completa.
+
     O navegador é reaproveitado entre marcas e tentativas ENQUANTO
     estiver saudável — só é relançado quando de fato crasha (ou quando
     a confirmação de sessão falha). Isso evita pagar o "preço" de abrir
@@ -313,6 +341,11 @@ def extrair_dados_upgaming():
     logger.info("Iniciando módulo de Extração Web...")
     logger.info("Avaliando o período de extração...")
     data_inicio, data_fim, data_fim_nc = obter_periodo_extracao()
+    if ACEITAR_DIAS_ZERADOS:
+        logger.warning(
+            "[MODO TESTE] ACEITAR_DIAS_ZERADOS=true: dias sem dados reais serão ACEITOS como zero depois do "
+            "retry. Use só para validar o pipeline; para voltar ao normal, remova a linha do .env."
+        )
 
     MAX_TENTATIVAS_POR_MARCA = 5
     ESPERAS_ENTRE_TENTATIVAS = [10, 20, 30, 45]  # segundos: cresce a cada tentativa nova, mantém o último valor se sobrar
@@ -331,13 +364,24 @@ def extrair_dados_upgaming():
             sucesso = False
             ultimo_faltantes = ["motivo desconhecido"]
 
+            # Progresso da MARCA: criado aqui, fora do loop de tentativas, para
+            # sobreviver entre elas (ver docstring).
+            arquivos_marca = []
+            checklist = _novo_checklist()
+
             for tentativa in range(1, MAX_TENTATIVAS_POR_MARCA + 1):
-                page, arquivos, completo, faltantes, browser_morreu = _extrair_uma_marca_uma_tentativa(
-                    p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc
+                page, completo, faltantes, browser_morreu = _extrair_uma_marca_uma_tentativa(
+                    p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
+                    arquivos_marca, checklist
                 )
 
                 if completo:
-                    arquivos_baixados_total.extend(arquivos)
+                    arquivos_baixados_total.extend(arquivos_marca)
+                    if checklist["Dias_zerados_aceitos"]:
+                        logger.warning(
+                            f"[MODO TESTE] {marca_arquivo.upper()}: dias aceitos como zerados: "
+                            f"{checklist['Dias_zerados_aceitos']}"
+                        )
                     logger.info(f"[MARCA COMPLETA] {marca_arquivo.upper()}: todos os arquivos esperados foram obtidos.")
                     sucesso = True
                     break
@@ -349,8 +393,8 @@ def extrair_dados_upgaming():
                     espera = ESPERAS_ENTRE_TENTATIVAS[min(tentativa - 1, len(ESPERAS_ENTRE_TENTATIVAS) - 1)]
                     motivo_retry = "crash de navegador" if browser_morreu else f"faltando {faltantes}"
                     logger.warning(
-                        f"[MARCA REINICIADA] {marca_arquivo.upper()}: tentativa {tentativa}/{MAX_TENTATIVAS_POR_MARCA} "
-                        f"incompleta ({motivo_retry}). Aguardando {espera}s e tentando novamente..."
+                        f"[MARCA RETOMADA] {marca_arquivo.upper()}: tentativa {tentativa}/{MAX_TENTATIVAS_POR_MARCA} "
+                        f"incompleta ({motivo_retry}). Aguardando {espera}s e retomando só o que falta..."
                     )
                     time.sleep(espera)
 
@@ -364,11 +408,37 @@ def extrair_dados_upgaming():
     return arquivos_baixados_total, marcas_incompletas_final
 
 
+def _isolar_arquivo_invalido(caminho: Path) -> None:
+    """
+    Tira do caminho esperado um arquivo que falhou na validação de formato,
+    renomeando-o para '<nome>.invalido' (fica guardado para diagnóstico).
+
+    Sem isso, o arquivo inválido continuava no lugar do arquivo bom. O UGS
+    Diário decide o que baixar pela EXISTÊNCIA do arquivo (ver
+    _detectar_lacunas_ugs_diario), então um dia inválido passava a parecer
+    "já baixado": a retomada o pularia e o loader leria um arquivo quebrado.
+    """
+    destino = caminho.with_name(caminho.name + ".invalido")
+    try:
+        caminho.replace(destino)
+        logger.warning(f"Arquivo inválido isolado como '{destino.name}' (guardado para diagnóstico).")
+    except OSError:
+        logger.exception(f"Não foi possível isolar o arquivo inválido: {caminho}")
+        try:
+            caminho.unlink(missing_ok=True)
+        except OSError:
+            logger.exception(f"Também não foi possível remover o arquivo inválido: {caminho}")
+
+
 def _salvar_e_registrar_download(download_info, caminho_arquivo, arquivos_baixados, atualizar_checklist, rotulo_log="Salvo"):
     """
     Parte final, idêntica em todo download simples do BackOffice: salva o
     arquivo, valida o formato, registra na lista de arquivos baixados,
     atualiza o checklist e loga.
+
+    Se a validação de formato falhar, o arquivo inválido é isolado
+    (_isolar_arquivo_invalido) antes de a exceção seguir adiante, para que
+    ele não fique no lugar de um arquivo bom.
 
     `atualizar_checklist` é um callback sem argumentos (ex: lambda) porque
     a atualização do checklist varia entre os chamadores — às vezes é
@@ -382,7 +452,11 @@ def _salvar_e_registrar_download(download_info, caminho_arquivo, arquivos_baixad
     de uma confirmação extra antes do download real começar.
     """
     download_info.value.save_as(caminho_arquivo)
-    validar_formato_xlsx(Path(caminho_arquivo))
+    try:
+        validar_formato_xlsx(Path(caminho_arquivo))
+    except FormatoInvalidoError:
+        _isolar_arquivo_invalido(Path(caminho_arquivo))
+        raise
     arquivos_baixados.append(caminho_arquivo)
     atualizar_checklist()
     logger.info(f"{rotulo_log}: {caminho_arquivo}")
@@ -390,6 +464,10 @@ def _salvar_e_registrar_download(download_info, caminho_arquivo, arquivos_baixad
 
 def _baixar_nc(page, marca_arquivo, marca_bo, data_inicio, data_fim_nc, pasta_destino, arquivos_baixados, checklist):
     """[1/6] Novas Contas."""
+    if checklist["NC"]:
+        logger.info(f"[JÁ OBTIDO] NC - {marca_arquivo}: obtido em tentativa anterior, pulando.")
+        return
+
     page.click(Seletores.Menu.USERS)
     page.wait_for_timeout(2000)
     try:
@@ -421,6 +499,10 @@ def _baixar_nc(page, marca_arquivo, marca_bo, data_inicio, data_fim_nc, pasta_de
 
 def _baixar_transacoes(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist):
     """[2/6] System Transactions."""
+    if checklist["Transacoes"]:
+        logger.info(f"[JÁ OBTIDO] Transações - {marca_arquivo}: obtido em tentativa anterior, pulando.")
+        return
+
     page.click(Seletores.Menu.TRANSACTIONS)
     page.wait_for_timeout(3000)
     page.click('div.choosen:visible')
@@ -459,8 +541,13 @@ def _baixar_transacoes(page, marca_arquivo, marca_bo, data_inicio, data_fim, pas
     )
 
 
-def _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist):
-    """[3/6] UGS Acumulado (Completo + 4 tipos)."""
+def _abrir_tela_ugs(page, marca_bo, data_inicio, data_fim):
+    """
+    Abre a tela de User Game Statistics já com a marca e o período
+    selecionados. Compartilhada por UGS Acumulado e UGS Diário: o diário
+    depende dessa tela aberta, mas numa retomada o acumulado pode ter sido
+    pulado (já obtido), então o diário precisa conseguir abri-la sozinho.
+    """
     page.click(Seletores.Menu.UGS)
     page.wait_for_timeout(3000)
     page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
@@ -473,8 +560,29 @@ def _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, 
     page.fill(Seletores.Filtros.DATE_TO, data_fim)
     page.click(Seletores.Botoes.OK)
 
+
+def _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist):
+    """
+    [3/6] UGS Acumulado (Completo + 4 tipos).
+
+    Baixa só os tipos ainda não obtidos nesta marca (retomada). Devolve True
+    se abriu a tela de UGS (que o UGS Diário aproveita) e False se todos os
+    tipos já estavam obtidos e nada foi aberto.
+    """
     tipos_ugs = {"": "Completo", "1": "ST", "2": "LC", "7": "SB", "8": "MG"}
-    for valor, sigla in tipos_ugs.items():
+    pendentes = {valor: sigla for valor, sigla in tipos_ugs.items() if not checklist[f"UGS_{sigla}"]}
+
+    if not pendentes:
+        logger.info(f"[JÁ OBTIDO] UGS acumulado - {marca_arquivo}: todos os tipos obtidos em tentativa anterior, pulando.")
+        return False
+
+    if len(pendentes) < len(tipos_ugs):
+        ja_obtidos = [sigla for sigla in tipos_ugs.values() if sigla not in pendentes.values()]
+        logger.info(f"[JÁ OBTIDO] UGS acumulado - {marca_arquivo}: {ja_obtidos} obtidos em tentativa anterior, pulando.")
+
+    _abrir_tela_ugs(page, marca_bo, data_inicio, data_fim)
+
+    for valor, sigla in pendentes.items():
         page.select_option(Seletores.Filtros.GAME_TYPE, value=valor)
         page.click(Seletores.Botoes.SEARCH_ADD)
         page.wait_for_timeout(6000)
@@ -486,11 +594,13 @@ def _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, 
             atualizar_checklist=lambda s=sigla: checklist.__setitem__(f"UGS_{s}", True),
         )
 
+    return True
+
 
 def _detectar_lacunas_ugs_diario(marca_arquivo, janela_dias=7):
     """
     Verifica os últimos `janela_dias` dias (sem contar hoje) e devolve
-    quais ainda não têm arquivo salvo em disco. Checagem pura de
+    quais ainda não têm um xlsx válido em disco. Checagem pura de
     sistema de arquivos — nenhuma interação com o navegador aqui, o que
     a torna testável sem mockar 'page'.
     """
@@ -505,17 +615,95 @@ def _detectar_lacunas_ugs_diario(marca_arquivo, janela_dias=7):
 
         arquivo_esperado = pasta_ugs_checar / f"{nome_dia_checar}.xlsx"
 
-        # Se o arquivo não existe fisicamente na pasta, entra na lista de download
-        if not arquivo_esperado.exists():
+        # Entra na lista de download se o arquivo não existe OU existe mas não é um xlsx
+        # de verdade (ex: sobra de um download que veio quebrado). Um arquivo inválido
+        # não pode contar como "dia já baixado".
+        if not arquivo_esperado.exists() or _detectar_formato_real(arquivo_esperado) != "xlsx":
             dias_faltantes.append(dia_checar)
 
     return dias_faltantes
 
 
-def _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist):
-    """[4/6] UGS Diário (Buscador Dinâmico de Lacunas)."""
-    page.select_option(Seletores.Filtros.GAME_TYPE, value="")
+def _criar_ugs_diario_vazio(destino: Path) -> None:
+    """
+    Cria um UGS Diário sem nenhuma linha de dados (só o cabeçalho) no lugar de
+    um dia que o BackOffice não devolveu válido, para o Step 7 contar 0 usuários.
 
+    O cabeçalho é copiado de um UGS Diário válido já existente: primeiro da
+    pasta do próprio mês, depois das outras pastas de mês do mesmo ano. Se não
+    houver nenhum, levanta FileNotFoundError — melhor falhar do que inventar colunas.
+    """
+    mesma_pasta = sorted((f for f in destino.parent.glob("*.xlsx") if f != destino),
+                         key=lambda f: f.stat().st_mtime, reverse=True)
+    outras_pastas = sorted((f for f in destino.parent.parent.glob("*/*.xlsx") if f.parent != destino.parent),
+                           key=lambda f: f.stat().st_mtime, reverse=True)
+
+    cabecalho = None
+    for referencia in mesma_pasta + outras_pastas:
+        try:
+            wb_ref = openpyxl.load_workbook(referencia, read_only=True)
+            try:
+                primeira_linha = next(wb_ref.active.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            finally:
+                wb_ref.close()
+        except Exception:
+            continue  # arquivo ilegível não serve de referência
+        if primeira_linha and any(celula is not None for celula in primeira_linha):
+            cabecalho = list(primeira_linha)
+            break
+
+    if cabecalho is None:
+        raise FileNotFoundError(
+            f"Nenhum UGS Diário válido encontrado para copiar o cabeçalho (procurado em {destino.parent.parent})."
+        )
+
+    novo = openpyxl.Workbook()
+    novo.active.append(cabecalho)
+    novo.save(destino)
+    novo.close()
+
+
+def _tratar_ugs_diario_invalido(nome_dia, arq_destino, arquivos_baixados, checklist):
+    """
+    Chamada quando um UGS Diário falha na validação de formato. Devolve True se o
+    dia foi aceito como zerado (arquivo só com cabeçalho criado no lugar) e False
+    se o chamador deve levantar o erro, como sempre.
+
+    Só aceita com ACEITAR_DIAS_ZERADOS ligado e a partir da 2ª falha do mesmo dia
+    (a 1ª pode ser transitória; a retomada baixa o dia de novo antes de desistir).
+    """
+    falhas = checklist["UGS_Diario_falhas"]
+    falhas[nome_dia] = falhas.get(nome_dia, 0) + 1
+
+    if not ACEITAR_DIAS_ZERADOS or falhas[nome_dia] < 2:
+        return False
+
+    try:
+        _criar_ugs_diario_vazio(Path(arq_destino))
+    except Exception:
+        logger.exception(f"Não foi possível criar o UGS Diário vazio de {nome_dia}; o erro original será mantido.")
+        return False
+
+    arquivos_baixados.append(arq_destino)
+    checklist["UGS_Diario_obtidos"] += 1
+    checklist["Dias_zerados_aceitos"].append(f"UGS_Diario {nome_dia}")
+    logger.warning(
+        f"[DIA ZERADO ACEITO] UGS Diário {nome_dia}: veio inválido {falhas[nome_dia]}x; criado arquivo só com "
+        f"cabeçalho (0 usuários) porque ACEITAR_DIAS_ZERADOS=true."
+    )
+    return True
+
+
+def _baixar_ugs_diario(page, marca_arquivo, marca_bo, data_inicio, data_fim, arquivos_baixados, checklist, tela_ugs_aberta):
+    """
+    [4/6] UGS Diário (Buscador Dinâmico de Lacunas).
+
+    As lacunas são recalculadas a cada chamada a partir dos arquivos que
+    existem em disco, então numa retomada só os dias que ainda faltam são
+    baixados. Se a tela de UGS não foi aberta pelo UGS Acumulado desta
+    tentativa (tela_ugs_aberta=False), ela é aberta aqui — mas só quando há
+    lacuna a baixar, para não navegar à toa.
+    """
     # Variável ajustável: Quantos dias no passado o robô deve checar?
     JANELA_DIAS = 7
     logger.info(f"Checando lacunas de UGS Diário nos últimos {JANELA_DIAS} dias...")
@@ -526,7 +714,19 @@ def _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist):
     else:
         logger.info(f" Foram encontradas {len(dias_diarios_faltantes)} lacunas. Iniciando download...")
 
+    # 'esperados' vale só para o que falta AGORA, e 'obtidos' recomeça do zero:
+    # numa retomada, os dias baixados em tentativas anteriores já estão em disco
+    # e não entram mais na conta.
     checklist["UGS_Diario_esperados"] = len(dias_diarios_faltantes)
+    checklist["UGS_Diario_obtidos"] = 0
+
+    if not dias_diarios_faltantes:
+        return
+
+    if not tela_ugs_aberta:
+        _abrir_tela_ugs(page, marca_bo, data_inicio, data_fim)
+
+    page.select_option(Seletores.Filtros.GAME_TYPE, value="")
 
     # Agora o Playwright só entra em ação para os dias que realmente faltam
     for dia_alvo in dias_diarios_faltantes:
@@ -547,17 +747,25 @@ def _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist):
         pasta_ugs_alvo = obter_pasta_ugs_diario(marca_arquivo, dia_alvo.year, dia_alvo.month)
         arq_ugs_diario = str(pasta_ugs_alvo / f"{nome_dia}.xlsx")
 
-        _salvar_e_registrar_download(
-            download_info, arq_ugs_diario, arquivos_baixados,
-            atualizar_checklist=lambda: checklist.__setitem__(
-                "UGS_Diario_obtidos", checklist["UGS_Diario_obtidos"] + 1
-            ),
-            rotulo_log="Salvo UGS Diário",
-        )
+        try:
+            _salvar_e_registrar_download(
+                download_info, arq_ugs_diario, arquivos_baixados,
+                atualizar_checklist=lambda: checklist.__setitem__(
+                    "UGS_Diario_obtidos", checklist["UGS_Diario_obtidos"] + 1
+                ),
+                rotulo_log="Salvo UGS Diário",
+            )
+        except FormatoInvalidoError:
+            if not _tratar_ugs_diario_invalido(nome_dia, arq_ugs_diario, arquivos_baixados, checklist):
+                raise
 
 
 def _baixar_ftd(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist):
     """[5/6] FTD."""
+    if checklist["FTD"]:
+        logger.info(f"[JÁ OBTIDO] FTD - {marca_arquivo}: obtido em tentativa anterior, pulando.")
+        return
+
     page.click(Seletores.Menu.FTD)
     page.wait_for_timeout(3000)
     page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
@@ -629,16 +837,32 @@ def _extrair_dia_generalstats(page, data_loop, data_loop_fim, max_tentativas=2):
 
             if confiavel:
                 json_do_dia_valido = candidato
+                if tentativa > 1:
+                    logger.info(
+                        f"Dia {data_loop}: recuperado na tentativa {tentativa}/{max_tentativas}."
+                    )
                 break
 
             tentativas_restantes = max_tentativas - tentativa
+            # Só aceita uma RESPOSTA que chegou e parece vazia/zerada. Timeout ou erro de
+            # requisição não chegam aqui (caem nos except abaixo) e nunca são aceitos.
+            aceitar = ACEITAR_DIAS_ZERADOS and tentativas_restantes == 0 and isinstance(candidato, list)
+            if tentativas_restantes > 0:
+                acao = "Tentando novamente..."
+            elif aceitar:
+                acao = "[DIA ZERADO ACEITO] ACEITAR_DIAS_ZERADOS=true: seguindo com o dado como veio."
+            else:
+                acao = "Desistindo após retry."
             logger.warning(
                 f"Dia {data_loop} (tentativa {tentativa}/{max_tentativas}): "
-                f"dado suspeito — {motivo_falha}. "
-                + ("Tentando novamente..." if tentativas_restantes > 0 else "Desistindo após retry.")
+                f"dado suspeito — {motivo_falha}. {acao}"
             )
             if tentativas_restantes > 0:
                 page.wait_for_timeout(1500)
+            elif aceitar:
+                # motivo_falha segue preenchido DE PROPÓSITO: é o sinal, para quem chamou,
+                # de que este dia foi aceito apesar de suspeito.
+                json_do_dia_valido = candidato
 
         except PlaywrightTimeoutError:
             motivo_falha = "timeout — API demorou mais de 30s"
@@ -663,7 +887,9 @@ def _salvar_generalstats_mensal(dados_json_mensal, pasta_destino, marca_arquivo,
     with open(arq_gs, 'w', encoding='utf-8') as f:
         json.dump(dados_json_mensal, f, ensure_ascii=False, indent=4)
 
-    arquivos_baixados.append(arq_gs)
+    # Numa retomada o mesmo arquivo é regravado (agora mais completo): não duplica na lista.
+    if arq_gs not in arquivos_baixados:
+        arquivos_baixados.append(arq_gs)
     checklist["GeneralStats_obtidos"] = len(dados_json_mensal)
     logger.info(
         f"Salvo (JSON API): {arq_gs} — {len(dados_json_mensal)}/{dias_fechados} dias obtidos."
@@ -671,27 +897,18 @@ def _salvar_generalstats_mensal(dados_json_mensal, pasta_destino, marca_arquivo,
 
 
 def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos_baixados, checklist):
-    """[6/6] General Statistics (Scraping da API Invisível)."""
+    """
+    [6/6] General Statistics (Scraping da API Invisível).
+
+    Numa retomada, os dias já obtidos ficam em checklist["GeneralStats_dias"]
+    e só os dias que faltam são pedidos de novo. Se o mês já estava completo,
+    a função inteira é pulada.
+    """
+    if checklist["GeneralStats_esperados"] and checklist["GeneralStats_obtidos"] >= checklist["GeneralStats_esperados"]:
+        logger.info(f"[JÁ OBTIDO] General Statistics - {marca_arquivo}: obtido em tentativa anterior, pulando.")
+        return
+
     logger.info("Extraindo General Statistics via API (JSON)...")
-
-    page.click(Seletores.Menu.REPORT)
-    page.wait_for_timeout(500)
-    page.click(Seletores.Menu.GEN_STATS)
-    page.wait_for_timeout(3000)
-
-    # Seleciona a marca
-    page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
-    page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
-    page.wait_for_timeout(1000)
-    page.click(f'text="{marca_bo}" >> visible=true')
-    page.wait_for_timeout(500)
-
-    try:
-        page.wait_for_load_state("networkidle", timeout=5000)
-    except PlaywrightTimeoutError:
-        pass
-
-    page.wait_for_timeout(2000)
 
     # Define a data_alvo buscando a inteligência do date_utils
     data_alvo = obter_data_alvo()
@@ -701,11 +918,38 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
     mes_alvo = data_alvo.month
     ano_alvo = data_alvo.year
 
-    dados_json_mensal = []
+    dias_obtidos = checklist["GeneralStats_dias"]
     checklist["GeneralStats_esperados"] = dias_fechados
+    dias_pendentes = [dia for dia in range(1, dias_fechados + 1) if dia not in dias_obtidos]
 
-    if dias_fechados > 0:
-        for dia in range(1, dias_fechados + 1):
+    if dias_obtidos and dias_pendentes:
+        logger.info(
+            f"[RETOMADA] General Statistics - {marca_arquivo}: {len(dias_obtidos)} dia(s) já obtidos; "
+            f"buscando só {dias_pendentes}."
+        )
+
+    # Só navega até a tela se ainda há dia a buscar
+    if dias_pendentes:
+        page.click(Seletores.Menu.REPORT)
+        page.wait_for_timeout(500)
+        page.click(Seletores.Menu.GEN_STATS)
+        page.wait_for_timeout(3000)
+
+        # Seleciona a marca
+        page.click(Seletores.Filtros.SEARCH_BRAND_INPUT)
+        page.fill(Seletores.Filtros.SEARCH_BRAND_INPUT, marca_bo)
+        page.wait_for_timeout(1000)
+        page.click(f'text="{marca_bo}" >> visible=true')
+        page.wait_for_timeout(500)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except PlaywrightTimeoutError:
+            pass
+
+        page.wait_for_timeout(2000)
+
+        for dia in dias_pendentes:
             # Substitui o 'hoje.replace' por uma formatação de data cravada
             data_loop = f"{dia:02d}-{mes_alvo:02d}-{ano_alvo}"
             # Limite seguro: dia seguinte às 00:00, para não perder o último minuto do dia.
@@ -715,10 +959,9 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
             json_do_dia, motivo_falha = _extrair_dia_generalstats(page, data_loop, data_loop_fim)
 
             if json_do_dia is not None:
-                dados_json_mensal.append({
-                    "Dia": dia,
-                    "dados": json_do_dia
-                })
+                dias_obtidos[dia] = json_do_dia
+                if motivo_falha:  # aceito apesar de suspeito (ver _extrair_dia_generalstats)
+                    checklist["Dias_zerados_aceitos"].append(f"GeneralStats {data_loop}")
             else:
                 logger.error(
                     f"Dia {data_loop}: dado não confiável mesmo após retry ({motivo_falha}). "
@@ -728,6 +971,7 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
             # Espera um pouco antes de ir para o próximo dia para não derrubar a API
             page.wait_for_timeout(1000)
 
+    dados_json_mensal = [{"Dia": dia, "dados": dias_obtidos[dia]} for dia in sorted(dias_obtidos)]
     _salvar_generalstats_mensal(dados_json_mensal, pasta_destino, marca_arquivo, dias_fechados, arquivos_baixados, checklist)
 
 
@@ -755,7 +999,9 @@ def _extrair_relatorios_marca(page, marca_arquivo, marca_bo, data_inicio, data_f
 
     _baixar_nc(page, marca_arquivo, marca_bo, data_inicio, data_fim_nc, pasta_destino, arquivos_baixados, checklist)
     _baixar_transacoes(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
-    _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
-    _baixar_ugs_diario(page, marca_arquivo, arquivos_baixados, checklist)
+    # O UGS Diário reaproveita a tela aberta pelo UGS Acumulado; se o acumulado foi
+    # pulado numa retomada, o diário abre a tela sozinho (só se houver lacuna).
+    tela_ugs_aberta = _baixar_ugs_acumulado(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
+    _baixar_ugs_diario(page, marca_arquivo, marca_bo, data_inicio, data_fim, arquivos_baixados, checklist, tela_ugs_aberta)
     _baixar_ftd(page, marca_arquivo, marca_bo, data_inicio, data_fim, pasta_destino, arquivos_baixados, checklist)
     _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos_baixados, checklist)

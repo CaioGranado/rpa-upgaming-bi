@@ -17,7 +17,12 @@ def obter_data_alvo():
     
     # Se estamos nos primeiros 5 dias do mês, pergunta sobre o fechamento!
     if hoje.day <= 5:
+        ultimo_dia_do_mes_anterior = hoje.replace(day=1) - timedelta(days=1)
         print(f"\n[ATENÇÃO] Hoje é dia {hoje.strftime('%d/%m/%Y')}.")
+        print(f"  S = FECHAMENTO do mês anterior -> data alvo {ultimo_dia_do_mes_anterior.strftime('%d/%m/%Y')}")
+        print(f"  N = fluxo normal (D-1)         -> data alvo {ontem.strftime('%d/%m/%Y')}")
+        if ultimo_dia_do_mes_anterior.date() == ontem.date():
+            print("  Hoje é dia 1: S e N dão a MESMA data alvo. A abertura do novo mês só começa amanhã (respondendo N).")
         resposta = input("Deseja rodar o FECHAMENTO do mês anterior? (S/N): ").strip().upper()
         
         if resposta == 'S':

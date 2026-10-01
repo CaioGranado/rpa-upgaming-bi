@@ -27,6 +27,18 @@ except ValueError as e:
     logger.critical(f"Erro fatal ao carregar as configurações das marcas: {e}")
     sys.exit(1)
 
+# ------------ Modo de teste: aceitar dias zerados ------------
+# DESLIGADO por padrão. O extrator trata como falha um dia do General Statistics
+# que vem vazio ou com Slot zerado, e um UGS Diário que vem quebrado, porque em
+# operação normal isso indica erro de extração (e não atividade zero). Ligado,
+# esses dias são aceitos como zero depois do retry, com aviso alto no log. Serve
+# para validar o pipeline quando o BackOffice não tem dados reais para esses
+# dias. Para ligar: ACEITAR_DIAS_ZERADOS=true no .env. Para voltar ao normal,
+# remova a linha ou use false.
+ACEITAR_DIAS_ZERADOS: Final[bool] = os.getenv("ACEITAR_DIAS_ZERADOS", "false").strip().lower() in {
+    "1", "true", "sim", "s", "yes",
+}
+
 # ------------ Diretórios e Constantes Básicas ------------ 
 PASTA_RAIZ: Final[Path] = Path.home() / "Downloads"
 TXT_ORGANICOS: Final[str] = "Orgânicos"

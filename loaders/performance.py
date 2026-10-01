@@ -50,6 +50,97 @@ from utils.formatacao_utils import formatar_brl, formatar_int, formatar_num
 logger = logging.getLogger(__name__)
 
 
+# Colunas com FÓRMULA da BaseGeral, arrastadas para o mês inteiro na abertura. Lista confirmada
+# pela equipe: F:I, L:M, V:W, Y:AB, AE, AH, AK, AN, AZ:BE, BG, BI:BJ. N, AX e AY ficam FORA de
+# propósito: são valores colados (N pelo Step 2, que grava N:O; AX e AY pelo Step 4, que grava AT:AY),
+# não fórmulas. Qualquer coluna nova de fórmula
+# precisa ser incluída aqui; a conferência da abertura (_conferir_formulas_do_mes) avisa se faltar.
+_BLOCOS_FORMULAS_ABERTURA = ["F:I", "L:M", "V:W", "Y:AB", "AE:AE", "AH:AH", "AK:AK", "AN:AN", "AZ:BE", "BG:BG", "BI:BJ"]
+
+# Última coluna conhecida da BaseGeral (BM): a mesma usada no zebrado da abertura de mês.
+_ULTIMA_COLUNA_BASEGERAL = 65
+# Colunas A:E (referência, data, ano, mês e dia) são escritas como VALOR na abertura: nunca são arrastadas.
+_ULTIMA_COLUNA_FIXA = 5
+
+
+def _numero_da_coluna(letras: str) -> int:
+    numero = 0
+    for letra in letras.upper():
+        numero = numero * 26 + (ord(letra) - ord("A") + 1)
+    return numero
+
+
+def _letra_da_coluna(numero: int) -> str:
+    letras = ""
+    while numero:
+        numero, resto = divmod(numero - 1, 26)
+        letras = chr(ord("A") + resto) + letras
+    return letras
+
+
+def _colunas_do_bloco(bloco: str) -> set[int]:
+    """'F:I' -> {6, 7, 8, 9}."""
+    inicio, fim = bloco.split(":")
+    return set(range(_numero_da_coluna(inicio), _numero_da_coluna(fim) + 1))
+
+
+def _conferir_formulas_do_mes(ws, linha_referencia, linha_fim, colunas_arrastadas):
+    """
+    Confere, logo depois do FillDown dos blocos fixos, se o mês aberto ficou como
+    esperado. NÃO arrasta nada por conta própria: a lista de colunas
+    (_BLOCOS_FORMULAS_ABERTURA) é decisão da equipe; esta função só confere e avisa.
+
+    1. Coluna com FÓRMULA na linha de referência (último dia do mês anterior) que não
+       está na lista: só avisada ([VERIFICAR]). Se deveria ser arrastada, é preciso
+       incluí-la na lista. Vale também para colunas depois da BM.
+    2. Coluna da lista com VALOR (não fórmula) na referência: avisada ([VERIFICAR]);
+       o FillDown copiou esse valor para o mês todo.
+    3. Coluna da lista que tinha fórmula na referência e não tem no último dia do mês:
+       levanta DadosNaoConfiaveisError antes do wb.Save(), então o arquivo não é salvo
+       com o mês aberto pela metade.
+
+    Devolve {"fora_da_lista": [...], "valor_na_lista": [...]} com as letras das colunas.
+    """
+    usado = ws.UsedRange
+    ultima_coluna = max(_ULTIMA_COLUNA_BASEGERAL, usado.Column + usado.Columns.Count - 1)
+
+    formulas_na_referencia = {
+        coluna for coluna in range(_ULTIMA_COLUNA_FIXA + 1, ultima_coluna + 1)
+        if ws.Cells(linha_referencia, coluna).HasFormula
+    }
+
+    fora_da_lista = sorted(formulas_na_referencia - colunas_arrastadas)
+    valor_na_lista = sorted(colunas_arrastadas - formulas_na_referencia)
+    esperadas = colunas_arrastadas & formulas_na_referencia
+    sem_formula_no_fim = sorted(c for c in esperadas if not ws.Cells(linha_fim, c).HasFormula)
+
+    def letras(colunas):
+        return [_letra_da_coluna(c) for c in colunas]
+
+    logger.info(
+        f" -> Fórmulas do mês: {len(esperadas)} coluna(s) da lista confirmadas na linha de referência "
+        f"({linha_referencia}) e presentes na linha {linha_fim}."
+        if not sem_formula_no_fim else
+        f" -> Fórmulas do mês: {len(esperadas)} coluna(s) da lista com fórmula na linha de referência ({linha_referencia})."
+    )
+    if fora_da_lista:
+        logger.warning(
+            f"[VERIFICAR] {letras(fora_da_lista)} têm FÓRMULA na linha {linha_referencia} mas NÃO estão em "
+            f"blocos_formulas, então não foram arrastadas. Se deveriam, inclua-as na lista."
+        )
+    if valor_na_lista:
+        logger.warning(
+            f"[VERIFICAR] {letras(valor_na_lista)} estão em blocos_formulas, mas na linha {linha_referencia} têm "
+            f"VALOR (não fórmula): o FillDown copiou esse valor para o mês todo. Confirme se é intencional."
+        )
+    if sem_formula_no_fim:
+        raise DadosNaoConfiaveisError(
+            f"Abertura de mês: as colunas {letras(sem_formula_no_fim)} deveriam ter fórmula na linha {linha_fim} "
+            f"(último dia do mês) e não têm. O arquivo não foi salvo."
+        )
+    return {"fora_da_lista": letras(fora_da_lista), "valor_na_lista": letras(valor_na_lista)}
+
+
 def carregar_base_performance_step1(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 1) ({marca}) ===")
     arquivo_transacoes = obter_caminho_base(marca, "Transacoes", obter_data_alvo())
@@ -139,10 +230,15 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
             
             logger.info(" -> Arrastando todos os blocos de fórmulas estendidas...")
             # Lista modular: o FillDown traz a fórmula, mas sobrescreve a cor
-            blocos_formulas = ["F:I", "L:N", "V:W", "Y:AB", "AE:AE", "AH:AH", "AK:AK", "AN:AN", "AX:BE", "BG:BG", "BI:BJ"]
+            blocos_formulas = _BLOCOS_FORMULAS_ABERTURA
+            colunas_arrastadas = set()
             for bloco in blocos_formulas:
                 col_inicio, col_fim = bloco.split(':')
                 ws.Range(f"{col_inicio}{ultima_linha_preenchida}:{col_fim}{linha_fim_nova}").FillDown()
+                colunas_arrastadas |= _colunas_do_bloco(bloco)
+
+            # Confere o resultado: fórmulas fora da lista, valores na lista e fórmula no fim do mês
+            _conferir_formulas_do_mes(ws, ultima_linha_preenchida, linha_fim_nova, colunas_arrastadas)
 
             logger.info(" -> Alternando a cor de fundo (Zebrado Mensal) sobre as fórmulas...")
             cor_antiga = ws.Cells(ultima_linha_preenchida, 1).Interior.ColorIndex

@@ -9,7 +9,11 @@ import win32com.client as win32
 
 from transformers.data_cleaner import blindar_dados
 from utils.excel_utils import _fechar_excel_seguro
-from utils.file_utils import _fazer_backup, _obter_caminho_download, obter_caminho_base_completa
+from utils.file_utils import (
+    _fazer_backup,
+    _obter_caminho_download,
+    obter_caminho_base_completa,
+)
 
 logger = logging.getLogger(__name__)
 
