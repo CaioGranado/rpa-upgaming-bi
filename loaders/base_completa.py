@@ -7,13 +7,10 @@ import logging
 import pandas as pd
 import win32com.client as win32
 
+from config.settings import TXT_ORGANICOS
 from transformers.data_cleaner import blindar_dados
 from utils.excel_utils import _fechar_excel_seguro
-from utils.file_utils import (
-    _fazer_backup,
-    _obter_caminho_download,
-    obter_caminho_base_completa,
-)
+from utils.file_utils import _fazer_backup, _obter_caminho_download, obter_caminho_base_completa
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +42,7 @@ def atualizar_base_completa_historica(marca, *args, **kwargs):
     
     if 'ParentUserName' in df_nc.columns:
         logger.info("Limpando texto 'Orgânicos' da coluna ParentUserName para injeção...")
-        df_nc['ParentUserName'] = df_nc['ParentUserName'].replace("Orgânicos", "")
+        df_nc['ParentUserName'] = df_nc['ParentUserName'].replace(TXT_ORGANICOS, "")
 
     if id_ancora_str in nc_ids_str.values:
         idx_corte = nc_ids_str[nc_ids_str == id_ancora_str].index[0]

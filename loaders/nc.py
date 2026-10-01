@@ -6,9 +6,12 @@ import logging
 import pandas as pd
 import win32com.client as win32
 
+from config.settings import TXT_ORGANICOS
 from transformers.data_cleaner import aplicar_corte_datas_futuras, blindar_dados
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
+    ITEM_VAZIO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -74,21 +77,21 @@ def carregar_base_nc(marca, *args, **kwargs):
         atualizar_dinamicas(wb, excel)
 
         ws_din = wb.Sheets("Din_Diario")
-        aplicar_filtro_dinamica(ws_din, "B1", valor_desejado="(Tudo)")
-        aplicar_filtro_dinamica(ws_din, "F1", valor_desejado="Orgânicos")
-        aplicar_filtro_dinamica(ws_din, "A3", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_din, "E3", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din, "B1", valor_desejado=FILTRO_TUDO)
+        aplicar_filtro_dinamica(ws_din, "F1", valor_desejado=TXT_ORGANICOS)
+        aplicar_filtro_dinamica(ws_din, "A3", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_din, "E3", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
 
         ws_din_regiao = wb.Sheets("Din_Regiao")
-        aplicar_filtro_dinamica(ws_din_regiao, "B2", valor_desejado="Orgânicos")
-        aplicar_filtro_dinamica(ws_din_regiao, "F2", valor_desejado="(Tudo)", exceto="Orgânicos")
+        aplicar_filtro_dinamica(ws_din_regiao, "B2", valor_desejado=TXT_ORGANICOS)
+        aplicar_filtro_dinamica(ws_din_regiao, "F2", valor_desejado=FILTRO_TUDO, exceto=TXT_ORGANICOS)
 
         ws_fortune = wb.Sheets("Fortune")
         aplicar_filtro_dinamica(ws_fortune, "B2", valor_desejado="danielfortune")
         aplicar_filtro_dinamica(ws_fortune, "F1", valor_desejado="danielfortune")
         aplicar_filtro_dinamica(ws_fortune, "F2", valor_desejado="True")
-        aplicar_filtro_dinamica(ws_fortune, "A4", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_fortune, "E4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_fortune, "A4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_fortune, "E4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
         
         logger.info("Salvando arquivo de NC (Por favor, aguarde. Pode levar alguns segundos)...")
         wb.Save()

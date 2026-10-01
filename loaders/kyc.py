@@ -9,6 +9,8 @@ import win32com.client as win32
 from transformers.data_cleaner import aplicar_corte_datas_futuras, blindar_dados
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
+    ITEM_VAZIO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -106,10 +108,10 @@ def carregar_base_kyc(marca, *args, **kwargs):
         aplicar_filtro_dinamica(ws_din_kyc, "B2", "True")
         aplicar_filtro_dinamica(ws_din_kyc, "F1", "Sim")
         aplicar_filtro_dinamica(ws_din_kyc, "F2", "True")
-        aplicar_filtro_dinamica(ws_din_kyc, "A4", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_din_kyc, "E4", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_din_kyc, "I4", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_din_kyc, "J4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din_kyc, "A4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_din_kyc, "E4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_din_kyc, "I4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_din_kyc, "J4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
 
         logger.info("Salvando arquivo de KYC...")
         wb.Save()

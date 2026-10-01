@@ -3,6 +3,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Final
 
 import openpyxl
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Rótulos de contagem fixa esperados por marca (não inclui UGS_Diario nem
 # GeneralStats, que têm contagem variável — tratados via contadores abaixo).
-_ROTULOS_FIXOS_ESPERADOS = [
+_ROTULOS_FIXOS_ESPERADOS: Final[list[str]] = [
     "NC", "Transacoes", "UGS_Completo", "UGS_ST", "UGS_LC", "UGS_SB", "UGS_MG",
     "FTD",
 ]
@@ -190,7 +191,7 @@ def _extrair_com_tratamento_erros(page, marca_arquivo, marca_bo, data_inicio, da
     except FormatoInvalidoError as e:
         # Arquivo chegou num formato inesperado — o checklist já reflete o que foi
         # obtido até este ponto.
-        logger.error(
+        logger.exception(
             f"[MARCA INTERROMPIDA] {marca_arquivo.upper()}: formato inválido detectado "
             f"na extração. Detalhes: {e}"
         )
@@ -228,8 +229,8 @@ def _fechar_navegador_com_seguranca(page):
     """
     try:
         page.context.close()
-    except Exception:
-        pass
+    except Exception:  # fechar um navegador já morto pode falhar de formas variadas; é esperado
+        logger.debug("Navegador já estava fechado ou não respondeu ao fechar (esperado após um crash).", exc_info=True)
 
 
 def _extrair_uma_marca_uma_tentativa(p, page, marca_arquivo, marca_bo, data_inicio, data_fim, data_fim_nc,
@@ -646,8 +647,9 @@ def _criar_ugs_diario_vazio(destino: Path) -> None:
                 primeira_linha = next(wb_ref.active.iter_rows(min_row=1, max_row=1, values_only=True), None)
             finally:
                 wb_ref.close()
-        except Exception:
-            continue  # arquivo ilegível não serve de referência
+        except Exception:  # qualquer falha de leitura só descarta esta referência
+            logger.debug(f"UGS Diário ilegível ignorado como referência de cabeçalho: {referencia.name}", exc_info=True)
+            continue
         if primeira_linha and any(celula is not None for celula in primeira_linha):
             cabecalho = list(primeira_linha)
             break
@@ -869,9 +871,9 @@ def _extrair_dia_generalstats(page, data_loop, data_loop_fim, max_tentativas=2):
             logger.warning(
                 f"Timeout no dia {data_loop} (tentativa {tentativa}/{max_tentativas})."
             )
-        except Exception as e:
+        except Exception as e:  # erro inesperado vira falha DESTE dia (com retry), sem abortar o mês
             motivo_falha = f"erro inesperado: {e}"
-            logger.error(
+            logger.exception(
                 f"Erro inesperado no dia {data_loop} (tentativa {tentativa}/{max_tentativas}): {e}"
             )
 
@@ -953,7 +955,9 @@ def _baixar_general_stats(page, marca_arquivo, marca_bo, pasta_destino, arquivos
             # Substitui o 'hoje.replace' por uma formatação de data cravada
             data_loop = f"{dia:02d}-{mes_alvo:02d}-{ano_alvo}"
             # Limite seguro: dia seguinte às 00:00, para não perder o último minuto do dia.
-            data_loop_fim = calcular_limite_seguro(datetime(ano_alvo, mes_alvo, dia)).strftime("%d-%m-%Y %H:%M")
+            data_loop_fim = calcular_limite_seguro(datetime(ano_alvo, mes_alvo, dia)).strftime(  # noqa: DTZ001 - data de calendário, sem fuso
+                "%d-%m-%Y %H:%M"
+            )
             logger.info(f" -> Extraindo dados do dia {data_loop}...")
 
             json_do_dia, motivo_falha = _extrair_dia_generalstats(page, data_loop, data_loop_fim)

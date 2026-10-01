@@ -29,6 +29,7 @@ import calendar
 import json
 import logging
 from datetime import datetime
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,13 @@ from utils.file_utils import (
 from utils.formatacao_utils import formatar_brl, formatar_int, formatar_num
 
 logger = logging.getLogger(__name__)
+
+# Textos e identificadores repetidos nos 7 steps (uma definição só, em vez de copiar o literal).
+_ROTULO_LINHA: Final[str] = "Rótulos de Linha"
+_PROGID_EXCEL: Final[str] = "Excel.Application"
+_MSG_LENDO_HISTORICO: Final[str] = "Lendo histórico da 'BaseGeral' para auditoria..."
+_MSG_SALVANDO: Final[str] = "Salvando Base Performance..."
+_MSG_ERRO_GRAVACAO: Final[str] = "Erro crítico ao gravar a Base Performance:"
 
 
 # Colunas com FÓRMULA da BaseGeral, arrastadas para o mês inteiro na abertura. Lista confirmada
@@ -152,7 +160,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     logger.info("Lendo Tabela Dinâmica 'Din_Diario' no arquivo de Transações...")
     df_din = pd.read_excel(arquivo_transacoes, sheet_name="Din_Diario", header=None)
     
-    idx_header = df_din[df_din.apply(lambda r: r.astype(str).str.contains('Rótulos de Linha', case=False).any(), axis=1)].index
+    idx_header = df_din[df_din.apply(lambda r: r.astype(str).str.contains(_ROTULO_LINHA, case=False).any(), axis=1)].index
     
     if idx_header.empty:
         logger.error("Não foi possível encontrar 'Rótulos de Linha' na aba Din_Diario.")
@@ -162,12 +170,16 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     df_din.columns = df_din.iloc[linha_cabecalho]
     df_din = df_din.iloc[linha_cabecalho + 1:].reset_index(drop=True)
     
-    df_din = df_din[~df_din['Rótulos de Linha'].astype(str).str.contains('Total|Vazio|NaN|nan', case=False, na=False)]
+    df_din = df_din[~df_din[_ROTULO_LINHA].astype(str).str.contains('Total|Vazio|NaN|nan', case=False, na=False)]
     
-    col_deposito = [c for c in df_din.columns if 'deposit' in str(c).lower()][0]
-    col_saque = [c for c in df_din.columns if 'withdraw' in str(c).lower()][0]
+    col_deposito = next((c for c in df_din.columns if 'deposit' in str(c).lower()), None)
+    col_saque = next((c for c in df_din.columns if 'withdraw' in str(c).lower()), None)
+    if col_deposito is None or col_saque is None:
+        raise DadosNaoConfiaveisError(
+            f"Colunas de Deposit/Withdraw não encontradas na Tabela Dinâmica 'Din_Diario' ({marca})."
+        )
     
-    df_din['Dia'] = pd.to_numeric(df_din['Rótulos de Linha'], errors='coerce').fillna(0).astype(int)
+    df_din['Dia'] = pd.to_numeric(df_din[_ROTULO_LINHA], errors='coerce').fillna(0).astype(int)
     df_din[col_deposito] = pd.to_numeric(df_din[col_deposito], errors='coerce').fillna(0)
     df_din[col_saque] = pd.to_numeric(df_din[col_saque], errors='coerce').fillna(0)
     
@@ -178,7 +190,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     
     df_din = garantir_continuidade_temporal(df_din, limite_dia)
 
-    logger.info("Lendo histórico da 'BaseGeral' para auditoria...")
+    logger.info(_MSG_LENDO_HISTORICO)
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,J,K", header=0)
     
     data_alvo = obter_data_alvo()
@@ -188,7 +200,7 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         _fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True
         excel.DisplayAlerts = False
         
@@ -285,14 +297,14 @@ def carregar_base_performance_step1(marca, *args, **kwargs):
         logger.info(f"Sobrescrevendo colunas J (Depósitos) e K (Saques) das linhas {linha_excel_inicio} até {linha_excel_fim}...")
         ws.Range(ws.Cells(linha_excel_inicio, 10), ws.Cells(linha_excel_fim, 11)).Value = dados_para_injetar
         
-        logger.info("Salvando Base Performance...")
+        logger.info(_MSG_SALVANDO)
         wb.Save()
         wb.Close()
         excel.Quit()
         logger.info("-> Step 1 da Base Performance concluído com sucesso!")
         
     except Exception:
-        logger.exception("Erro crítico ao gravar a Base Performance:")
+        logger.exception(_MSG_ERRO_GRAVACAO)
         _fechar_excel_seguro(wb, excel)
         raise
 
@@ -308,7 +320,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     df_din_full = pd.read_excel(arquivo_nc, sheet_name="Din_Diario", header=None)
     
     def extrair_dinamica(df_pedaco, nome_coluna_valor):
-        mask = df_pedaco.apply(lambda r: r.astype(str).str.contains('Rótulos de Linha', case=False).any(), axis=1)
+        mask = df_pedaco.apply(lambda r: r.astype(str).str.contains(_ROTULO_LINHA, case=False).any(), axis=1)
         if not mask.any(): return pd.DataFrame()
         
         idx = df_pedaco[mask].index[0]
@@ -342,7 +354,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
-    logger.info("Lendo histórico da 'BaseGeral' para auditoria...")
+    logger.info(_MSG_LENDO_HISTORICO)
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,N,O", header=0)
     
     data_alvo = obter_data_alvo()
@@ -388,7 +400,7 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True
         excel.DisplayAlerts = False
         
@@ -401,14 +413,14 @@ def carregar_base_performance_step2(marca, *args, **kwargs):
         logger.info(f"Sobrescrevendo colunas N (Orgânicos) e O (Total) das linhas {linha_excel_inicio} até {linha_excel_fim}...")
         ws.Range(ws.Cells(linha_excel_inicio, 14), ws.Cells(linha_excel_fim, 15)).Value = dados_para_injetar
         
-        logger.info("Salvando Base Performance...")
+        logger.info(_MSG_SALVANDO)
         wb.Save()
         wb.Close()
         excel.Quit()
         logger.info("-> Step 2 da Base Performance concluído com sucesso!")
         
     except Exception:
-        logger.exception("Erro crítico ao gravar a Base Performance:")
+        logger.exception(_MSG_ERRO_GRAVACAO)
         _fechar_excel_seguro(wb, excel)
         raise
 
@@ -421,7 +433,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
         raise DadosNaoConfiaveisError("Arquivos necessários para a Base Performance (Step 3) não encontrados.")
 
     def extrair_dinamica_bloco(df_source, col_idx_dia, col_idx_valores, col_names):
-        mask = df_source.iloc[:, col_idx_dia].astype(str).str.contains('Rótulos de Linha', case=False)
+        mask = df_source.iloc[:, col_idx_dia].astype(str).str.contains(_ROTULO_LINHA, case=False)
         if not mask.any(): return pd.DataFrame()
         
         idx = df_source[mask].index[0]
@@ -465,7 +477,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
-    logger.info("Lendo histórico da 'BaseGeral' para auditoria...")
+    logger.info(_MSG_LENDO_HISTORICO)
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,P:U,X", header=0)
     
     data_alvo = obter_data_alvo()
@@ -481,8 +493,8 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     
     logger.info(f"Data {primeiro_dia_mes.strftime('%d/%m/%Y')} encontrada na linha {linha_excel_inicio} do Excel. Iniciando reconciliação...")
     
-    dados_para_injetar_PU = []
-    dados_para_injetar_X = []
+    dados_para_injetar_pu = []
+    dados_para_injetar_x = []
     
     letras_pu = ['P', 'Q', 'R', 'S', 'T', 'U']
     
@@ -491,8 +503,8 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
         novos_pu = [row[col] for col in nomes_colunas_pu]
         novo_x = row['FTD_Org']
         
-        dados_para_injetar_PU.append(novos_pu)
-        dados_para_injetar_X.append([novo_x])
+        dados_para_injetar_pu.append(novos_pu)
+        dados_para_injetar_x.append([novo_x])
         
         idx_alvo = idx_inicio_pandas + (dia - 1)
         
@@ -518,7 +530,7 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True
         excel.DisplayAlerts = False
         
@@ -526,22 +538,22 @@ def carregar_base_performance_step3(marca, *args, **kwargs):
         wb = excel.Workbooks.Open(str(arquivo_performance), UpdateLinks=0)
         ws = wb.Sheets("BaseGeral")
         
-        linha_excel_fim = linha_excel_inicio + len(dados_para_injetar_PU) - 1
+        linha_excel_fim = linha_excel_inicio + len(dados_para_injetar_pu) - 1
         
         logger.info(f"Sobrescrevendo colunas P até U (linhas {linha_excel_inicio} até {linha_excel_fim})...")
-        ws.Range(ws.Cells(linha_excel_inicio, 16), ws.Cells(linha_excel_fim, 21)).Value = dados_para_injetar_PU
+        ws.Range(ws.Cells(linha_excel_inicio, 16), ws.Cells(linha_excel_fim, 21)).Value = dados_para_injetar_pu
         
         logger.info(f"Sobrescrevendo coluna X (linhas {linha_excel_inicio} até {linha_excel_fim})...")
-        ws.Range(ws.Cells(linha_excel_inicio, 24), ws.Cells(linha_excel_fim, 24)).Value = dados_para_injetar_X
+        ws.Range(ws.Cells(linha_excel_inicio, 24), ws.Cells(linha_excel_fim, 24)).Value = dados_para_injetar_x
         
-        logger.info("Salvando Base Performance...")
+        logger.info(_MSG_SALVANDO)
         wb.Save()
         wb.Close()
         excel.Quit()
         logger.info("-> Step 3 da Base Performance concluído com sucesso!")
         
     except Exception:
-        logger.exception("Erro crítico ao gravar a Base Performance:")
+        logger.exception(_MSG_ERRO_GRAVACAO)
         _fechar_excel_seguro(wb, excel)
         raise
 
@@ -575,7 +587,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
         
     df_mtd = garantir_continuidade_temporal(df_mtd, limite_dia)
 
-    logger.info("Lendo histórico da 'BaseGeral' para auditoria...")
+    logger.info(_MSG_LENDO_HISTORICO)
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,AT:AY", header=0)
     
     data_alvo = obter_data_alvo()
@@ -624,7 +636,7 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True
         excel.DisplayAlerts = False
         
@@ -637,14 +649,14 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
         logger.info(f"Sobrescrevendo colunas AT até AY (linhas {linha_excel_inicio} até {linha_excel_fim})...")
         ws.Range(ws.Cells(linha_excel_inicio, 46), ws.Cells(linha_excel_fim, 51)).Value = dados_para_injetar
         
-        logger.info("Salvando Base Performance...")
+        logger.info(_MSG_SALVANDO)
         wb.Save()
         wb.Close()
         excel.Quit()
         logger.info("-> Step 4 da Base Performance concluído com sucesso!")
         
     except Exception:
-        logger.exception("Erro crítico ao gravar a Base Performance:")
+        logger.exception(_MSG_ERRO_GRAVACAO)
         _fechar_excel_seguro(wb, excel)
         raise
 
@@ -701,7 +713,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
         
     df_mesclado = garantir_continuidade_temporal(df_mesclado, limite_dia)
 
-    logger.info("Lendo histórico da 'BaseGeral' para auditoria...")
+    logger.info(_MSG_LENDO_HISTORICO)
     df_base = pd.read_excel(arquivo_performance, sheet_name="BaseGeral", usecols="B,BF,BH,BK:BM", header=0)
     
     data_alvo = obter_data_alvo()
@@ -717,9 +729,9 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     
     logger.info(f"Data {primeiro_dia_mes.strftime('%d/%m/%Y')} encontrada na linha {linha_excel_inicio}. Iniciando reconciliação...")
     
-    dados_BF = []
-    dados_BH = []
-    dados_BK_BM = []
+    dados_bf = []
+    dados_bh = []
+    dados_bk_bm = []
     
     for i, row in df_mesclado.iterrows():
         dia = int(row['Dia'])
@@ -727,9 +739,9 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
         novo_bh = int(row['KYC_FTD_True'])
         novos_bk_bm = [int(row['Col_BK']), int(row['Col_BL']), int(row['Col_BM'])]
         
-        dados_BF.append([novo_bf])
-        dados_BH.append([novo_bh])
-        dados_BK_BM.append(novos_bk_bm)
+        dados_bf.append([novo_bf])
+        dados_bh.append([novo_bh])
+        dados_bk_bm.append(novos_bk_bm)
         
         idx_alvo = idx_inicio_pandas + (dia - 1)
         if idx_alvo < len(df_base):
@@ -762,7 +774,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True
         excel.DisplayAlerts = False
         
@@ -770,25 +782,25 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
         wb = excel.Workbooks.Open(str(arquivo_performance), UpdateLinks=0)
         ws = wb.Sheets("BaseGeral")
         
-        linha_excel_fim = linha_excel_inicio + len(dados_BF) - 1
+        linha_excel_fim = linha_excel_inicio + len(dados_bf) - 1
         
         logger.info(f"Sobrescrevendo coluna BF (linha {linha_excel_inicio} a {linha_excel_fim})...")
-        ws.Range(ws.Cells(linha_excel_inicio, 58), ws.Cells(linha_excel_fim, 58)).Value = dados_BF
+        ws.Range(ws.Cells(linha_excel_inicio, 58), ws.Cells(linha_excel_fim, 58)).Value = dados_bf
         
         logger.info(f"Sobrescrevendo coluna BH (linha {linha_excel_inicio} a {linha_excel_fim})...")
-        ws.Range(ws.Cells(linha_excel_inicio, 60), ws.Cells(linha_excel_fim, 60)).Value = dados_BH
+        ws.Range(ws.Cells(linha_excel_inicio, 60), ws.Cells(linha_excel_fim, 60)).Value = dados_bh
         
         logger.info(f"Sobrescrevendo colunas BK até BM (linha {linha_excel_inicio} a {linha_excel_fim})...")
-        ws.Range(ws.Cells(linha_excel_inicio, 63), ws.Cells(linha_excel_fim, 65)).Value = dados_BK_BM
+        ws.Range(ws.Cells(linha_excel_inicio, 63), ws.Cells(linha_excel_fim, 65)).Value = dados_bk_bm
         
-        logger.info("Salvando Base Performance...")
+        logger.info(_MSG_SALVANDO)
         wb.Save()
         wb.Close()
         excel.Quit()
         logger.info("-> Step 5 da Base Performance concluído com sucesso!")
         
     except Exception:
-        logger.exception("Erro crítico ao gravar a Base Performance:")
+        logger.exception(_MSG_ERRO_GRAVACAO)
         _fechar_excel_seguro(wb, excel)
         raise
 
@@ -882,7 +894,7 @@ def carregar_base_performance_step6(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True; excel.DisplayAlerts = False
         wb = excel.Workbooks.Open(str(arquivo_performance), UpdateLinks=0)
         ws = wb.Sheets("BaseGeral")
@@ -922,7 +934,7 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
     idx_inicio = datas_base[datas_base == primeiro_dia_mes].index[0]
     linha_excel_inicio = idx_inicio + 2 
 
-    dados_AS = []
+    dados_as = []
     pasta_ugs = obter_pasta_ugs_diario(marca, data_alvo.year, data_alvo.month)
     logger.info(f"Lendo e contando os arquivos diários do UGS (01 até {limite_dia:02d})...")
     
@@ -946,7 +958,7 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
 
         qtd_usuarios = len(df_ugs)
 
-        dados_AS.append([qtd_usuarios])
+        dados_as.append([qtd_usuarios])
         
         idx_alvo = idx_inicio + (dia - 1)
         if idx_alvo < len(df_base):
@@ -961,15 +973,15 @@ def carregar_base_performance_step7(marca, *args, **kwargs):
     wb, excel = None, None
     try:
         #_fazer_backup(arquivo_performance)
-        excel = win32.DispatchEx("Excel.Application")
+        excel = win32.DispatchEx(_PROGID_EXCEL)
         excel.Visible = True; excel.DisplayAlerts = False
         wb = excel.Workbooks.Open(str(arquivo_performance), UpdateLinks=0)
         ws = wb.Sheets("BaseGeral")
         
-        linha_excel_fim = linha_excel_inicio + len(dados_AS) - 1
+        linha_excel_fim = linha_excel_inicio + len(dados_as) - 1
         logger.info(f"Sobrescrevendo coluna AS (linhas {linha_excel_inicio} a {linha_excel_fim})...")
         
-        ws.Range(ws.Cells(linha_excel_inicio, 45), ws.Cells(linha_excel_fim, 45)).Value = dados_AS
+        ws.Range(ws.Cells(linha_excel_inicio, 45), ws.Cells(linha_excel_fim, 45)).Value = dados_as
         
         wb.Save(); wb.Close(); excel.Quit()
         logger.info("-> Step 7 (Usuários Únicos) Concluído com Sucesso!")

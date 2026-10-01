@@ -6,9 +6,11 @@ import logging
 import pandas as pd
 import win32com.client as win32
 
+from config.settings import TXT_ORGANICOS
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -56,18 +58,18 @@ def carregar_base_ftd(marca, *args, **kwargs):
         atualizar_dinamicas(wb, excel)
 
         ws_din_afiliado = wb.Sheets("Din_Afiliados")
-        aplicar_filtro_dinamica(ws_din_afiliado, "B2", valor_desejado="(Tudo)")
-        aplicar_filtro_dinamica(ws_din_afiliado, "E2", valor_desejado="Orgânicos")
+        aplicar_filtro_dinamica(ws_din_afiliado, "B2", valor_desejado=FILTRO_TUDO)
+        aplicar_filtro_dinamica(ws_din_afiliado, "E2", valor_desejado=TXT_ORGANICOS)
 
         ws_fortune = wb.Sheets("Fortune")
         aplicar_filtro_dinamica(ws_fortune, "B2", valor_desejado="danielfortune")
 
         ws_din_diario = wb.Sheets("Din_Diario")
-        aplicar_filtro_dinamica(ws_din_diario, "A4", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_din_diario, "A4", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_din_diario, "B3", valor_desejado=["De R$0 até R$10", "De R$10 até R$20", "De R$20 até R$30", "De R$30 até R$50", "Superior a R$50"])
 
         ws_din_faixa = wb.Sheets("Din_FaixaPagamento")
-        aplicar_filtro_dinamica(ws_din_faixa, "A3", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_din_faixa, "A3", valor_desejado=FILTRO_TUDO)
 
         logger.info("Salvando arquivo de FTD (Por favor, aguarde)...")
         wb.Save()

@@ -12,6 +12,8 @@ import win32com.client as win32
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
+    ITEM_VAZIO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -136,10 +138,10 @@ def carregar_base_mtd(marca, *args, **kwargs):
 
         ws_din = wb.Sheets("Din")
         mes_str = MESES_PT[data_alvo.month][0].lower()
-        aplicar_filtro_dinamica(ws_din, "B1", "(Tudo)")
+        aplicar_filtro_dinamica(ws_din, "B1", FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_din, "B2", mes_str)
-        aplicar_filtro_dinamica(ws_din, "A5", valor_desejado="(Tudo)", exceto="(blank)")
-        aplicar_filtro_dinamica(ws_din, "B4", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din, "A5", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
+        aplicar_filtro_dinamica(ws_din, "B4", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
         
         logger.info("Salvando arquivo MTD (Mãos longe do teclado!)...")
         wb.Save()

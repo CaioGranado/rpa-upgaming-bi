@@ -10,6 +10,8 @@ import win32com.client as win32
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
+    ITEM_VAZIO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -94,46 +96,46 @@ def carregar_base_transacoes(marca, *args, **kwargs):
 
         for aba in ["Din_Afiliados", "MTD_ID", "Din_Diario"]:
             ws_alvo = wb.Sheets(aba)
-            aplicar_filtro_dinamica(ws_alvo, "A7", valor_desejado="(Tudo)")
+            aplicar_filtro_dinamica(ws_alvo, "A7", valor_desejado=FILTRO_TUDO)
             aplicar_filtro_dinamica(ws_alvo, "B5", valor_desejado=["Deposit", "Withdraw", "Bonus Activation"])
 
 
         ws_cashback = wb.Sheets("Afiliados_Cashback")
         # Tabela 1
-        aplicar_filtro_dinamica(ws_cashback, "A8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "A8", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_cashback, "B3", "Sim")
         aplicar_filtro_dinamica(ws_cashback, "B4", mes_str)
         aplicar_filtro_dinamica(ws_cashback, "B5", "Success")
         aplicar_filtro_dinamica(ws_cashback, "B6", "Cash Bonus")
         
         # Tabela 2
-        aplicar_filtro_dinamica(ws_cashback, "D8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "D8", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_cashback, "E3", "Sim")
         aplicar_filtro_dinamica(ws_cashback, "E4", mes_str)
         aplicar_filtro_dinamica(ws_cashback, "E5", "Success")
         aplicar_filtro_dinamica(ws_cashback, "E6", "LeaderBoard Cash Deposit" )
         
         # Tabela 3
-        aplicar_filtro_dinamica(ws_cashback, "G8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "G8", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_cashback, "H3", "Sim")
         aplicar_filtro_dinamica(ws_cashback, "H4", mes_str)
         aplicar_filtro_dinamica(ws_cashback, "H5", "Success")
-        aplicar_filtro_dinamica(ws_cashback, "H6", "(blank)")
+        aplicar_filtro_dinamica(ws_cashback, "H6", ITEM_VAZIO)
         
         # Tabela 4
-        aplicar_filtro_dinamica(ws_cashback, "K8", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "K8", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_cashback, "L3", "Sim")
         aplicar_filtro_dinamica(ws_cashback, "L4", mes_str)
         aplicar_filtro_dinamica(ws_cashback, "L5", "Success")
-        aplicar_filtro_dinamica(ws_cashback, "L6", "(Tudo)")
+        aplicar_filtro_dinamica(ws_cashback, "L6", FILTRO_TUDO)
 
         ws_mtd_perf = wb.Sheets("MTD_Performance")
-        aplicar_filtro_dinamica(ws_mtd_perf, "A5", valor_desejado="(Tudo)")
+        aplicar_filtro_dinamica(ws_mtd_perf, "A5", valor_desejado=FILTRO_TUDO)
         aplicar_filtro_dinamica(ws_mtd_perf, "B1", "Deposit")
         aplicar_filtro_dinamica(ws_mtd_perf, "B2", "Success")
 
         ws_fortune = wb.Sheets("fortune")
-        aplicar_filtro_dinamica(ws_fortune, "A5", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_fortune, "A5", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
         aplicar_filtro_dinamica(ws_fortune, "B1", "danielfortune" )
         aplicar_filtro_dinamica(ws_fortune, "B2", "Success")
         aplicar_filtro_dinamica(ws_fortune, "B3", "Deposit")

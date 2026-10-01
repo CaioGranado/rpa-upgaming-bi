@@ -209,7 +209,7 @@ def _detectar_formato_real(caminho: Path) -> str:
     try:
         with open(caminho, 'rb') as f:
             inicio = f.read(4)
-    except Exception:
+    except OSError:
         return "desconhecido"
 
     if inicio[:2] == b'PK':
@@ -253,7 +253,7 @@ def _diagnosticar_json_inesperado(caminho: Path, nome_arquivo: str) -> str:
             f"Verificar manualmente."
         )
 
-    except Exception:
+    except (OSError, ValueError):  # ValueError cobre JSONDecodeError e UnicodeDecodeError
         return (
             f"{nome_arquivo}: arquivo não veio em xlsx e também não pôde ser "
             f"interpretado como JSON válido. Verificar manualmente."

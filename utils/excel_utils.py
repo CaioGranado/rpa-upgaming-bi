@@ -1,8 +1,13 @@
 import logging
+from typing import Final
 
 import pywintypes
 
 logger = logging.getLogger(__name__)
+
+# Textos que aparecem nos filtros das tabelas dinâmicas das bases (uma definição só para todos os loaders).
+FILTRO_TUDO: Final[str] = "(Tudo)"
+ITEM_VAZIO: Final[str] = "(blank)"
 
 def atualizar_dinamicas(wb, excel):
     logger.info("Sincronizando Tabelas Dinâmicas (RefreshAll)...")
@@ -131,7 +136,7 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
             return
 
         # 3. Cenário: Resetar (Tudo)
-        if valor_desejado == "(Tudo)":
+        if valor_desejado == FILTRO_TUDO:
             pivot_field.ClearAllFilters()
             logger.info(
                 f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
@@ -150,7 +155,7 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
         except Exception:
             if fallback:
                 logger.warning(f"Filtro '{valor_desejado}' não encontrado em {sheet.Name}!{celula}")
-                if fallback == "(Tudo)":
+                if fallback == FILTRO_TUDO:
                     pivot_field.ClearAllFilters()
                     logger.info(
                         f"[FILTRO APLICADO] Aba='{sheet.Name}' Célula='{celula}' Campo='{pivot_field.Name}' "
@@ -182,4 +187,4 @@ def aplicar_filtro_dinamica(sheet, celula, valor_desejado, fallback=None, exceto
 
     except Exception as e:
         nome_aba = getattr(sheet, "Name", "Desconhecido")
-        logger.error(f"Erro estrutural ao manipular filtro na aba {nome_aba}, célula {celula}: {e}")
+        logger.exception(f"Erro estrutural ao manipular filtro na aba {nome_aba}, célula {celula}: {e}")

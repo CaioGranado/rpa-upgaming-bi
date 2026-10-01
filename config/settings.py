@@ -40,7 +40,6 @@ ACEITAR_DIAS_ZERADOS: Final[bool] = os.getenv("ACEITAR_DIAS_ZERADOS", "false").s
 }
 
 # ------------ Diretórios e Constantes Básicas ------------ 
-PASTA_RAIZ: Final[Path] = Path.home() / "Downloads"
 TXT_ORGANICOS: Final[str] = "Orgânicos"
 
 _drive_raw = os.getenv("DRIVE_ROOT_PATH")

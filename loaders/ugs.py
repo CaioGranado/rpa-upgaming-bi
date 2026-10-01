@@ -10,6 +10,8 @@ import win32com.client as win32
 from transformers.data_cleaner import blindar_dados
 from utils.date_utils import calcular_limite_seguro, obter_data_alvo
 from utils.excel_utils import (
+    FILTRO_TUDO,
+    ITEM_VAZIO,
     _fechar_excel_seguro,
     aplicar_filtro_dinamica,
     atualizar_dinamicas,
@@ -82,7 +84,7 @@ def carregar_base_ugs(marca, *args, **kwargs):
         atualizar_dinamicas(wb, excel)
 
         ws_din_completo = wb.Sheets("Din_Completo")
-        aplicar_filtro_dinamica(ws_din_completo, "A3", valor_desejado="(Tudo)", exceto="(blank)")
+        aplicar_filtro_dinamica(ws_din_completo, "A3", valor_desejado=FILTRO_TUDO, exceto=ITEM_VAZIO)
 
         data_inicio = data_alvo.replace(day=1)
         str_carimbo = f"dados alimentados de {data_inicio.strftime('%d/%m/%Y 00:00')} até {calcular_limite_seguro(data_alvo).strftime('%d/%m/%Y %H:%M')}"
