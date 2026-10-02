@@ -28,6 +28,7 @@ nem chega a chamar este Step 6 para ela.
 import calendar
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Final
 
@@ -660,6 +661,71 @@ def carregar_base_performance_step4(marca, *args, **kwargs):
         _fechar_excel_seguro(wb, excel)
         raise
 
+# Faixas de tempo entre cadastro e FTD (3ª dinâmica da aba DIN do KYC) -> coluna da BaseGeral.
+# Faixa 1 -> BK, Faixa 2 -> BL, Faixa 3 -> BM.
+_FAIXAS_FTD_KYC: Final[dict[int, str]] = {1: 'Col_BK', 2: 'Col_BL', 3: 'Col_BM'}
+
+
+def _extrair_faixas_ftd_kyc(df_source: pd.DataFrame, col_idx_dia: int) -> pd.DataFrame:
+    """
+    Lê a dinâmica Dia x Faixa de FTD (aba DIN do KYC) identificando cada coluna pelo
+    NOME do cabeçalho ('Faixa N ...'), nunca pela posição.
+
+    A dinâmica só cria coluna para a faixa que tem dado: sem ninguém na Faixa 2, vêm
+    apenas Faixa 1 e Faixa 3, lado a lado. Ler por posição quebraria (IndexError) ou,
+    pior, jogaria o valor da Faixa 3 na coluna da Faixa 2. Regra de negócio confirmada:
+    faixa ausente = 0 (nenhum FTD naquela faixa).
+
+    Levanta DadosNaoConfiaveisError se aparecer um cabeçalho que não seja 'Faixa 1/2/3'
+    (nem 'Total Geral'), ou se a mesma faixa aparecer duas vezes: o layout mudou, e
+    adivinhar a coluna poderia gravar número no lugar errado.
+    """
+    mask = df_source.iloc[:, col_idx_dia].astype(str).str.contains('Rótulos|Dia', case=False)
+    if not mask.any():
+        return pd.DataFrame()
+
+    idx_cabecalho = df_source[mask].index[0]
+    colunas_faixa = {}  # número da faixa -> posição da coluna no df
+
+    for pos in range(col_idx_dia + 1, df_source.shape[1]):
+        texto = df_source.iloc[idx_cabecalho, pos]
+        if pd.isna(texto) or not str(texto).strip():
+            break  # coluna vazia = fim da dinâmica
+        texto = str(texto).strip()
+        if texto.lower().startswith('total geral'):
+            break
+        m = re.match(r'Faixa\s*([123])\b', texto, re.IGNORECASE)
+        if not m or int(m.group(1)) in colunas_faixa:
+            raise DadosNaoConfiaveisError(
+                f"Dinâmica de faixas de FTD (KYC/DIN) com cabeçalho inesperado na coluna nº "
+                f"{pos + 1}: '{texto}'. Esperado 'Faixa 1', 'Faixa 2' ou 'Faixa 3', sem repetição. "
+                f"O layout mudou e não é seguro mapear para BK/BL/BM."
+            )
+        colunas_faixa[int(m.group(1))] = pos
+
+    corpo = df_source.iloc[idx_cabecalho + 1:]
+    df = pd.DataFrame({'Dia': pd.to_numeric(corpo.iloc[:, col_idx_dia], errors='coerce')})
+
+    for faixa, nome_col in _FAIXAS_FTD_KYC.items():
+        if faixa in colunas_faixa:
+            df[nome_col] = pd.to_numeric(corpo.iloc[:, colunas_faixa[faixa]], errors='coerce')
+        else:
+            logger.info(
+                f"Faixa {faixa} ausente na dinâmica do KYC (nenhum FTD nessa faixa no período). "
+                f"Preenchida com 0 ({nome_col})."
+            )
+            df[nome_col] = 0
+
+    df = df.dropna(subset=['Dia'])
+    df['Dia'] = df['Dia'].astype(int)
+    df = df[df['Dia'] > 0].copy()
+
+    for nome_col in _FAIXAS_FTD_KYC.values():
+        df[nome_col] = df[nome_col].fillna(0).astype(int)
+
+    return df[['Dia', *_FAIXAS_FTD_KYC.values()]]
+
+
 def carregar_base_performance_step5(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO AUDITORIA E INJEÇÃO: BASE PERFORMANCE (STEP 5 - KYC) ({marca}) ===")
     arquivo_kyc = obter_caminho_base(marca, "KYC", obter_data_alvo())
@@ -693,7 +759,7 @@ def carregar_base_performance_step5(marca, *args, **kwargs):
 
     df_p1 = extrair_tabela(df_din_full, 0, [1], ['KYC_True'])
     df_p2 = extrair_tabela(df_din_full, 4, [5], ['KYC_FTD_True'])
-    df_p3 = extrair_tabela(df_din_full, 8, [9, 10, 11], ['Col_BK', 'Col_BL', 'Col_BM'])
+    df_p3 = _extrair_faixas_ftd_kyc(df_din_full, 8)  # faixas lidas por nome de cabeçalho, ausente = 0
 
     if df_p1.empty or df_p2.empty or df_p3.empty:
         logger.error("Falha ao ler as tabelas dinâmicas do KYC. Verifique o layout do arquivo.")

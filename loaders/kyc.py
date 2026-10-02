@@ -20,11 +20,35 @@ from utils.file_utils import _fazer_backup, _obter_caminho_download, obter_camin
 logger = logging.getLogger(__name__)
 
 
+def _limpar_formato_excedente(ws, ultima_linha_nova, ultima_coluna):
+    """
+    Remove o estilo (zebrado, bordas, formato de número) das linhas que sobraram
+    abaixo dos dados novos. ClearContents apaga só os valores: o estilo das linhas
+    do arquivo anterior (ex: mês passado clonado como template) ficaria no vazio.
+
+    Nunca mexe nas linhas 2 e 3, que são o molde do zebrado copiado a cada execução
+    (Delete deslocaria as linhas de baixo para cima e deixaria a linha 3 sem estilo).
+    O limite inferior vem da UsedRange, que inclui células só formatadas.
+    """
+    ultima_linha_usada = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    primeira_linha_excedente = max(ultima_linha_nova + 1, 4)
+    if ultima_linha_usada >= primeira_linha_excedente:
+        ws.Range(
+            ws.Cells(primeira_linha_excedente, 1),
+            ws.Cells(ultima_linha_usada, ultima_coluna),
+        ).ClearFormats()
+        logger.info(
+            f"Estilo residual removido em '{ws.Name}': linhas "
+            f"{primeira_linha_excedente} a {ultima_linha_usada}."
+        )
+
+
 def carregar_base_kyc(marca, *args, **kwargs):
     logger.info(f"=== INICIANDO CARREGAMENTO: KYC ({marca}) ===")
     arquivo_nc = _obter_caminho_download(marca, f"NC - {marca}.xlsx")
     arquivo_ftd = _obter_caminho_download(marca, f"FTD - {marca}.xlsx")
-    arquivo_base_oficial = obter_caminho_base(marca, "KYC", obter_data_alvo())
+    data_alvo = obter_data_alvo()
+    arquivo_base_oficial = obter_caminho_base(marca, "KYC", data_alvo)
     
     if not arquivo_base_oficial.exists():
         logger.warning("Arquivo oficial de KYC não encontrado. Pulando etapa.")
@@ -36,7 +60,6 @@ def carregar_base_kyc(marca, *args, **kwargs):
         
         if 'RegistrationDate' in df_nc.columns:
             logger.info("Aplicando corte rigoroso (NC): Mantendo registros até Hoje às 00:00...")
-            data_alvo = obter_data_alvo()
             df_nc = aplicar_corte_datas_futuras(df_nc, 'RegistrationDate', data_alvo)
             logger.info(f"Restaram {len(df_nc)} registros após o corte.")
             
@@ -48,8 +71,15 @@ def carregar_base_kyc(marca, *args, **kwargs):
         return
 
     if arquivo_ftd.exists():
-        logger.info(f"Lendo e blindando dados de: {arquivo_ftd.name}...")
-        df_ftd = blindar_dados(pd.read_excel(arquivo_ftd))
+        logger.info(f"Lendo dados de: {arquivo_ftd.name}...")
+        df_ftd = pd.read_excel(arquivo_ftd)
+
+        if 'TransactionDate' in df_ftd.columns:
+            logger.info("Aplicando corte rigoroso (FTD): Mantendo registros até Hoje às 00:00...")
+            df_ftd = aplicar_corte_datas_futuras(df_ftd, 'TransactionDate', data_alvo)
+            logger.info(f"Restaram {len(df_ftd)} registros após o corte.")
+
+        df_ftd = blindar_dados(df_ftd)
         dados_ftd = df_ftd.iloc[:, :21].values.tolist()
         ultima_linha_ftd = 1 + len(dados_ftd)
     else:
@@ -83,6 +113,8 @@ def carregar_base_kyc(marca, *args, **kwargs):
             ws_nc.Range("A2:AL3").Copy()
             ws_nc.Range(f"A2:AL{ultima_linha_nc}").PasteSpecial(Paste=-4122)
             excel.CutCopyMode = False
+
+        _limpar_formato_excedente(ws_nc, ultima_linha_nc, 38)
         
         logger.info("Injetando dados e fórmulas na aba 'FTD'...")
         ws_ftd = wb.Sheets("FTD")
@@ -100,6 +132,8 @@ def carregar_base_kyc(marca, *args, **kwargs):
             ws_ftd.Range("A2:W3").Copy()
             ws_ftd.Range(f"A2:W{ultima_linha_ftd}").PasteSpecial(Paste=-4122)
             excel.CutCopyMode = False
+
+        _limpar_formato_excedente(ws_ftd, ultima_linha_ftd, 23)
         
         logger.info("Sincronizando Tabelas Dinâmicas da aba 'DIN'...")
         atualizar_dinamicas(wb, excel)
